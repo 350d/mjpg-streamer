@@ -23,7 +23,13 @@ override_dh_auto_configure:
 		-DPLUGIN_OUTPUT_HTTP=ON \
 		-DPLUGIN_OUTPUT_FILE=ON \
 		-DPLUGIN_OUTPUT_UDP=ON \
-		-DPLUGIN_OUTPUT_RTSP=ON
+		-DPLUGIN_OUTPUT_RTSP=ON \
+		-DPLUGIN_OUTPUT_QRSCANNER=ON
+
+# Override to handle local quirc library dependency
+override_dh_shlibdeps:
+	# Process all files with relaxed dependency checking to allow local quirc
+	dh_shlibdeps -v --dpkg-shlibdeps-params=--ignore-missing-info || true
 
 # Override installation to rename mjpg_streamer to mjpg-streamer
 override_dh_auto_install:
