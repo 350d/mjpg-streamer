@@ -1,0 +1,59 @@
+# Build directories
+build/
+_build/
+cmake-build-*/
+
+# Temporary files
+tmp/
+*.tmp
+*.temp
+
+# Compiled binaries
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+mjpg_streamer
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+# Keep our custom cmake files
+!src/cmake/*.cmake
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Package files
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+
+# Test files
+test_*
+*_test
+
+# OS
+.DS_Store
+.cursor
+*.icloud
