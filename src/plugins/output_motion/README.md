@@ -15,16 +15,16 @@ This plugin provides motion detection capabilities for mjpg-streamer. It analyze
 
 | Parameter | Short | Description | Default |
 |-----------|-------|-------------|---------|
-| `--scale` | `-s` | Scale down factor (1-16) | 4 |
-| `--threshold` | `-l` | Brightness difference threshold in % (1-100) | 5 |
-| `--noise` | `-t` | Noise threshold in % (0.0-100.0) | 5 |
-| `--interval` | `-i` | Check every N frames | 1 |
+| `--downscale` | `-d` | Scale down factor (1-16) | 4 |
+| `--motion` | `-l` | Motion detection threshold in % (1-100) | 5 |
+| `--overload` | `-o` | Overload threshold in % (1-100) - ignores lighting changes | 50 |
+| `--skipframe` | `-s` | Check every N frames | 1 |
 | `--folder` | `-f` | Folder to save motion frames | - |
 | `--webhook` | `-w` | Webhook URL for motion events | - |
 | `--post` | `-p` | Use POST instead of GET for webhook | GET |
-| `--cooldown` | `-c` | Cooldown between events (seconds) | 2 |
+| `--cooldown` | `-c` | Cooldown between events (seconds) | 5 |
 | `--input` | `-n` | Input plugin number | 0 |
-| `--size-threshold` | `-z` | JPEG size change threshold in 0.1% units (0-1000) | 1 (0.1%) |
+| `--jpeg-size-check` | `-z` | JPEG size change threshold in 0.1% units (0-1000) | 1 (0.1%) |
 
 ## Usage Examples
 
@@ -54,32 +54,58 @@ mjpg_streamer -i "input_uvc.so -d /dev/video0" \
 ### High Sensitivity with Custom Settings
 ```bash
 mjpg_streamer -i "input_uvc.so -d /dev/video0" \
-  -o "output_motion.so -s 2 -l 3 -t 3 -c 1"
+  -o "output_motion.so -d 2 -l 3 -o 30 -c 1"
 ```
 
 ### Performance Optimization with Size Threshold
 ```bash
 mjpg_streamer -i "input_uvc.so -d /dev/video0" \
-  -o "output_motion.so -z 1 -s 4 -l 5 -t 5"  # 0.1% threshold (default)
+  -o "output_motion.so -z 1 -d 4 -l 5"  # 0.1% threshold (default)
 ```
 
 ### Higher Sensitivity (More Processing)
 ```bash
 mjpg_streamer -i "input_uvc.so -d /dev/video0" \
-  -o "output_motion.so -z 0 -s 4 -l 5 -t 5"  # 0.0% threshold (process all frames)
+  -o "output_motion.so -z 0 -d 4 -l 5"  # 0.0% threshold (process all frames)
 ```
 
 ### Lower Sensitivity (Less Processing)
 ```bash
 mjpg_streamer -i "input_uvc.so -d /dev/video0" \
-  -o "output_motion.so -z 5 -s 4 -l 5 -t 5"  # 0.5% threshold
+  -o "output_motion.so -z 5 -d 4 -l 5"  # 0.5% threshold
 ```
 
 ### Combined Usage
 ```bash
 mjpg_streamer -i "input_uvc.so -d /dev/video0" \
-  -o "output_motion.so -f /tmp/motion -w http://localhost:8080/motion -p -s 4 -l 5 -t 5 -z 3"
+  -o "output_motion.so -f /tmp/motion -w http://localhost:8080/motion -p -d 4 -l 5 -o 50 -z 3"
 ```
+
+## Key Features
+
+### Overload Protection
+The `--overload` parameter prevents false alarms from lighting changes:
+- **Default: 50%** - ignores motion events above 50% change
+- **Useful for**: Lights turning on/off, sudden brightness changes
+- **Example**: `-o 80` ignores motion above 80% change
+
+### Performance Optimization
+The `--jpeg-size-check` parameter optimizes performance:
+- **Default: 1 (0.1%)** - skips analysis for minimal changes
+- **Higher values**: Less processing, may miss subtle motion
+- **Lower values**: More processing, catches all motion
+
+### Frame Skipping
+The `--skipframe` parameter improves performance:
+- **Default: 1** - processes every frame
+- **Higher values**: Process every N frames (e.g., `-s 3` = every 3rd frame)
+- **Trade-off**: Better performance vs. motion detection accuracy
+
+### Cooldown Period
+The `--cooldown` parameter prevents notification spam:
+- **Default: 5 seconds** - minimum time between motion events
+- **Useful for**: Preventing multiple notifications for the same motion
+- **Example**: `-c 10` = minimum 10 seconds between notifications
 
 ## How It Works
 
@@ -89,8 +115,10 @@ mjpg_streamer -i "input_uvc.so -d /dev/video0" \
    - This prevents unnecessary processing only when the scene is completely static
 2. **Frame Processing**: Each frame is converted to grayscale and scaled down by the specified factor
 3. **Motion Calculation**: The plugin compares consecutive frames pixel by pixel
-4. **Threshold Check**: If the difference exceeds the noise threshold, motion is detected
-5. **Actions**: On motion detection:
+4. **Overload Check**: If motion level exceeds the overload threshold (`-o`), the event is ignored (prevents false alarms from lighting changes)
+5. **Motion Detection**: If the difference exceeds the motion threshold (`-l`), motion is detected
+6. **Cooldown Check**: If enough time hasn't passed since the last motion event (`-c`), the event is ignored
+7. **Actions**: On motion detection:
    - Optionally saves the frame with timestamp and motion level
    - Optionally sends a webhook notification with motion data
 
@@ -120,11 +148,44 @@ YYYYMMDD_HHMMSS_motion_LEVEL.jpg
 
 Example: `20240115_143025_motion_75.0%.jpg`
 
+## Configuration Examples
+
+### Indoor Security Camera
+```bash
+# Sensitive detection for indoor use
+mjpg_streamer -i "input_uvc.so -d /dev/video0" \
+  -o "output_motion.so -d 2 -l 2 -o 30 -c 3 -f /var/motion"
+```
+
+### Outdoor Security Camera
+```bash
+# Conservative detection for outdoor use with lighting changes
+mjpg_streamer -i "input_uvc.so -d /dev/video0" \
+  -o "output_motion.so -d 4 -l 10 -o 80 -c 10 -f /var/motion"
+```
+
+### High Performance Setup
+```bash
+# Skip frames for better performance
+mjpg_streamer -i "input_uvc.so -d /dev/video0" \
+  -o "output_motion.so -d 4 -l 5 -s 3 -z 5"
+```
+
+### Complete Security Setup
+```bash
+# All features enabled
+mjpg_streamer -i "input_uvc.so -d /dev/video0 -r 1280x720 -f 15" \
+  -o "output_http.so -p 8080" \
+  -o "output_motion.so -d 4 -l 5 -o 50 -s 1 -c 5 -z 1 -f /var/motion -w http://alerts.example.com/motion -p"
+```
+
 ## Performance Notes
 
-- **Scale Factor**: Higher values (e.g., 8) reduce processing load but may miss small movements
-- **Check Interval**: Skipping frames (e.g., `-i 5`) reduces CPU usage
-- **Thresholds**: Lower noise threshold (e.g., 3%) increases sensitivity but may cause false positives
+- **Downscale Factor**: Higher values (e.g., 8) reduce processing load but may miss small movements
+- **Frame Skipping**: Skipping frames (e.g., `-s 3`) reduces CPU usage
+- **Motion Threshold**: Lower values (e.g., 2%) increase sensitivity but may cause false positives
+- **Overload Threshold**: Higher values (e.g., 80%) prevent false alarms from lighting changes
+- **JPEG Size Check**: Higher values (e.g., 5) reduce processing but may miss subtle motion
 - **Cooldown**: Prevents rapid-fire notifications for continuous motion
 
 ## Dependencies
