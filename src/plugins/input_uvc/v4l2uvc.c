@@ -263,21 +263,30 @@ static size_t calculate_optimal_buffer_size(int width, int height, int format) {
     return (base_size + 15) & ~15;
 }
 
-/* Get recommended static buffer size based on resolution */
-static size_t get_recommended_static_buffer_size(int width, int height, int format) {
-    size_t required = calculate_optimal_buffer_size(width, height, format);
+/* Get format name for debugging */
+static const char* get_format_name(int format) {
+    switch (format) {
+        case V4L2_PIX_FMT_MJPEG: return "MJPEG";
+        case V4L2_PIX_FMT_JPEG: return "JPEG";
+        case V4L2_PIX_FMT_RGB24: return "RGB24";
+        case V4L2_PIX_FMT_RGB565: return "RGB565";
+        case V4L2_PIX_FMT_YUYV: return "YUYV";
+        case V4L2_PIX_FMT_UYVY: return "UYVY";
+        default: return "UNKNOWN";
+    }
+}
+
+/* Get recommended static buffer size based on actual camera settings */
+static size_t get_recommended_static_buffer_size(struct vdIn *vd) {
+    size_t required = calculate_optimal_buffer_size(vd->width, vd->height, vd->formatIn);
+    size_t static_buffer_size = sizeof(vd->static_framebuffer);
     
-    /* Common resolutions and their buffer sizes */
-    if (width <= 320 && height <= 240) {
-        return 320 * 240 * 4; /* VGA with margin */
-    } else if (width <= 640 && height <= 480) {
-        return 640 * 480 * 4; /* VGA with margin */
-    } else if (width <= 1280 && height <= 720) {
-        return 1280 * 720 * 4; /* HD with margin */
-    } else if (width <= 1920 && height <= 1080) {
-        return 1920 * 1080 * 4; /* Full HD with margin */
+    /* Check if static buffer is sufficient for current settings */
+    if (required <= static_buffer_size) {
+        /* Static buffer is large enough, use it */
+        return static_buffer_size;
     } else {
-        /* For larger resolutions, use dynamic allocation */
+        /* Static buffer too small, recommend dynamic allocation */
         return 0;
     }
 }
@@ -308,8 +317,8 @@ static int init_framebuffer(struct vdIn *vd) {
             return -1;
     }
     
-    /* Set static buffer size based on resolution */
-    size_t recommended_size = get_recommended_static_buffer_size(vd->width, vd->height, vd->formatIn);
+    /* Set static buffer size based on actual camera settings */
+    size_t recommended_size = get_recommended_static_buffer_size(vd);
     vd->static_buffer_size = (recommended_size > 0) ? recommended_size : sizeof(vd->static_framebuffer);
     
     /* Try to use static buffers first for better performance */
@@ -323,12 +332,14 @@ static int init_framebuffer(struct vdIn *vd) {
             vd->tmpbuffer = vd->framebuffer;
         }
         
-        DBG("Using static buffers: %zu bytes (requested: %zu bytes)\n", 
-            vd->static_buffer_size, required_size);
+        DBG("Using static buffers: %zu bytes for %dx%d %s (requested: %zu bytes)\n", 
+            vd->static_buffer_size, vd->width, vd->height, 
+            get_format_name(vd->formatIn), required_size);
     } else {
         /* Fallback to dynamic allocation for very large buffers */
-        DBG("Static buffer too small (%zu < %zu), using dynamic allocation\n", 
-            vd->static_buffer_size, required_size);
+        DBG("Static buffer too small (%zu < %zu) for %dx%d %s, using dynamic allocation\n", 
+            vd->static_buffer_size, required_size, vd->width, vd->height,
+            get_format_name(vd->formatIn));
         vd->framebuffer = (unsigned char *) calloc(1, required_size);
         if(!vd->framebuffer)
             return -1;
