@@ -29,7 +29,110 @@
 #include "huffman.h"
 #include "dynctrl.h"
 
+/* SIMD optimization headers */
+#ifdef __SSE2__
+#include <emmintrin.h>
+#define HAVE_SSE2 1
+#else
+#define HAVE_SSE2 0
+#endif
+
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#define HAVE_NEON 1
+#else
+#define HAVE_NEON 0
+#endif
+
 static int debug = 0;
+
+/* Architecture detection and SIMD-optimized memory operations */
+static int simd_available = 0;
+static int simd_type = 0; /* 0=none, 1=SSE2, 2=NEON */
+
+/* Detect available SIMD instructions */
+static void detect_simd_capabilities(void) {
+    simd_available = 0;
+    simd_type = 0;
+    
+#if HAVE_SSE2
+    /* Check for SSE2 support */
+    unsigned int eax, ebx, ecx, edx;
+    __asm__ volatile ("cpuid"
+                      : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+                      : "a" (1));
+    if (edx & (1 << 26)) { /* SSE2 bit */
+        simd_available = 1;
+        simd_type = 1; /* SSE2 */
+        DBG("SSE2 SIMD instructions detected and enabled\n");
+    }
+#elif HAVE_NEON
+    /* ARM NEON is always available on ARMv7+ */
+    simd_available = 1;
+    simd_type = 2; /* NEON */
+    DBG("ARM NEON SIMD instructions detected and enabled\n");
+#endif
+    
+    if (!simd_available) {
+        DBG("No SIMD instructions available, using standard memory operations\n");
+    }
+}
+
+/* SIMD-optimized memory copy */
+static void* simd_memcpy(void* dest, const void* src, size_t n) {
+    if (!simd_available || n < 16) {
+        return memcpy(dest, src, n);
+    }
+    
+#if HAVE_SSE2
+    if (simd_type == 1) {
+        /* SSE2 optimized copy */
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        /* Copy 16-byte chunks using SSE2 */
+        while (n >= 16) {
+            __m128i data = _mm_loadu_si128((__m128i*)s);
+            _mm_storeu_si128((__m128i*)d, data);
+            d += 16;
+            s += 16;
+            n -= 16;
+        }
+        
+        /* Handle remaining bytes */
+        if (n > 0) {
+            memcpy(d, s, n);
+        }
+        return dest;
+    }
+#endif
+
+#if HAVE_NEON
+    if (simd_type == 2) {
+        /* NEON optimized copy */
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        /* Copy 16-byte chunks using NEON */
+        while (n >= 16) {
+            uint8x16_t data = vld1q_u8((uint8_t*)s);
+            vst1q_u8((uint8_t*)d, data);
+            d += 16;
+            s += 16;
+            n -= 16;
+        }
+        
+        /* Handle remaining bytes */
+        if (n > 0) {
+            memcpy(d, s, n);
+        }
+        return dest;
+    }
+#endif
+    
+    /* Fallback to standard memcpy */
+    return memcpy(dest, src, n);
+}
 
 /* Signal pause condition when streaming state changes */
 static void signal_pause_condition(struct vdIn *vd) {
@@ -109,6 +212,13 @@ int init_videoIn(struct vdIn *vd, char *device, int width,
         return -1;
     if(grabmethod < 0 || grabmethod > 1)
         grabmethod = 1;     //mmap by default;
+    
+    /* Initialize SIMD capabilities on first call */
+    static int simd_initialized = 0;
+    if (!simd_initialized) {
+        detect_simd_capabilities();
+        simd_initialized = 1;
+    }
     vd->videodevice = NULL;
     vd->status = NULL;
     vd->pictName = NULL;
@@ -705,42 +815,26 @@ int memcpy_picture(unsigned char *out, unsigned char *buf, int size)
             return pos;
         sizein = ptcur - ptdeb;
 
-        /* Optimized memory copy for ARM (Pi Zero) with early exit */
+        /* SIMD-optimized memory copy with early exit */
         if (sizein > 0) {
-            if (sizein >= 16) {
-                __builtin_memcpy(out + pos, buf, sizein);
-            } else {
-                memcpy(out + pos, buf, sizein);
-            }
+            simd_memcpy(out + pos, buf, sizein);
             pos += sizein;
         }
         
         /* Only copy DHT data if needed */
         if (sizeof(dht_data) > 0) {
-            if (sizeof(dht_data) >= 16) {
-                __builtin_memcpy(out + pos, dht_data, sizeof(dht_data));
-            } else {
-                memcpy(out + pos, dht_data, sizeof(dht_data));
-            }
+            simd_memcpy(out + pos, dht_data, sizeof(dht_data));
             pos += sizeof(dht_data);
         }
         
         /* Copy remaining data if any */
         if ((size - sizein) > 0) {
-            if ((size - sizein) >= 16) {
-                __builtin_memcpy(out + pos, ptcur, size - sizein);
-            } else {
-                memcpy(out + pos, ptcur, size - sizein);
-            }
+            simd_memcpy(out + pos, ptcur, size - sizein);
             pos += size - sizein;
         }
     } else {
         /* Direct copy for huffman data */
-        if (size >= 16) {
-            __builtin_memcpy(out + pos, ptcur, size);
-        } else {
-            memcpy(out + pos, ptcur, size);
-        }
+        simd_memcpy(out + pos, ptcur, size);
         pos += size;
     }
     return pos;
@@ -783,22 +877,14 @@ int uvcGrab(struct vdIn *vd)
         memcpy (vd->tmpbuffer + HEADERFRAME1 + sizeof(dht_data), vd->mem[vd->buf.index] + HEADERFRAME1, (vd->buf.bytesused - HEADERFRAME1));
         */
 
-        /* Optimized memory copy for large buffers with bounds checking */
+        /* SIMD-optimized memory copy for large buffers with bounds checking */
         if (vd->buf.bytesused > 0 && vd->buf.bytesused <= vd->optimal_buffer_size) {
-            if (vd->buf.bytesused >= 16) {
-                __builtin_memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], vd->buf.bytesused);
-            } else {
-                memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], vd->buf.bytesused);
-            }
+            simd_memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], vd->buf.bytesused);
         } else {
             /* Fallback for oversized buffers */
             size_t copy_size = (vd->buf.bytesused > vd->optimal_buffer_size) ? 
                                vd->optimal_buffer_size : vd->buf.bytesused;
-            if (copy_size >= 16) {
-                __builtin_memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], copy_size);
-            } else {
-                memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], copy_size);
-            }
+            simd_memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], copy_size);
         }
         vd->tmpbytesused = vd->buf.bytesused;
         vd->tmptimestamp = vd->buf.timestamp;
@@ -811,19 +897,11 @@ int uvcGrab(struct vdIn *vd)
     case V4L2_PIX_FMT_RGB565:
     case V4L2_PIX_FMT_YUYV:
     case V4L2_PIX_FMT_UYVY:
-        /* Optimized memory copy for frame buffers */
+        /* SIMD-optimized memory copy for frame buffers */
         if(vd->buf.bytesused > vd->framesizeIn) {
-            if (vd->framesizeIn >= 16) {
-                __builtin_memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->framesizeIn);
-            } else {
-                memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->framesizeIn);
-            }
+            simd_memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->framesizeIn);
         } else {
-            if (vd->buf.bytesused >= 16) {
-                __builtin_memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->buf.bytesused);
-            } else {
-                memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->buf.bytesused);
-            }
+            simd_memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->buf.bytesused);
         }
         vd->tmpbytesused = vd->buf.bytesused;
         vd->tmptimestamp = vd->buf.timestamp;
