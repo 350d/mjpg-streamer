@@ -87,6 +87,15 @@ struct vdIn {
     unsigned char *framebuffer;
     streaming_state streamingState;
     void *context_ptr; /* pointer to context for pause signaling */
+    
+    /* Static buffers for performance optimization */
+    unsigned char static_framebuffer[1920 * 1080 * 3]; /* Max 1080p RGB24 */
+    unsigned char static_tmpbuffer[1920 * 1080 * 3];   /* Max 1080p RGB24 */
+    int use_static_buffers; /* Flag to use static buffers */
+    
+    /* Buffer size optimization */
+    size_t optimal_buffer_size; /* Pre-calculated optimal buffer size */
+    int buffer_alignment; /* Buffer alignment for better performance */
     int grabmethod;
     int width;
     int height;

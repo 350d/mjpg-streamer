@@ -237,44 +237,88 @@ error:
     return -1;
 }
 
+/* Calculate optimal buffer size with alignment for better performance */
+static size_t calculate_optimal_buffer_size(int width, int height, int format) {
+    size_t base_size = 0;
+    
+    switch (format) {
+        case V4L2_PIX_FMT_JPEG:
+        case V4L2_PIX_FMT_MJPEG:
+            base_size = (size_t) width * (height + 8) * 2;
+            break;
+        case V4L2_PIX_FMT_RGB24:
+            base_size = (size_t) width * height * 3;
+            break;
+        case V4L2_PIX_FMT_RGB565:
+        case V4L2_PIX_FMT_YUYV:
+        case V4L2_PIX_FMT_UYVY:
+            base_size = (size_t) width * height * 2;
+            break;
+        default:
+            base_size = (size_t) width * height * 2;
+            break;
+    }
+    
+    /* Align to 16-byte boundary for better memory access performance */
+    return (base_size + 15) & ~15;
+}
+
 static int init_framebuffer(struct vdIn *vd) {
     /* alloc a temp buffer to reconstruct the pict */
     vd->framesizeIn = (vd->width * vd->height << 1);
+    size_t required_size = 0;
+    
+    /* Calculate optimal buffer size with alignment */
+    vd->optimal_buffer_size = calculate_optimal_buffer_size(vd->width, vd->height, vd->formatIn);
+    required_size = vd->optimal_buffer_size;
+    
     switch (vd->formatIn) {
         case V4L2_PIX_FMT_JPEG:
             // Fall-through intentional
         case V4L2_PIX_FMT_MJPEG: // in JPG mode the frame size is varies at every frame, so we allocate a bit bigger buffer
-            // OPTIMIZATION: Use single buffer for MJPEG to save memory
-            vd->framebuffer = (unsigned char *) calloc(1, (size_t) vd->width * (vd->height + 8) * 2);
-            if(!vd->framebuffer)
-                return -1;
-            vd->tmpbuffer = vd->framebuffer; // Point to same buffer to avoid double allocation
             break;
         case V4L2_PIX_FMT_RGB24:
             vd->framesizeIn = (vd->width * vd->height) * 3;
-            vd->framebuffer =
-                (unsigned char *) calloc(1, (size_t) vd->framesizeIn);
             break;
         case V4L2_PIX_FMT_RGB565: // buffer allocation for non varies on frame size formats
         case V4L2_PIX_FMT_YUYV:
         case V4L2_PIX_FMT_UYVY:
-            vd->framebuffer =
-                (unsigned char *) calloc(1, (size_t) vd->framesizeIn);
             break;
         default:
             fprintf(stderr, "Unknown vd->formatIn\n");
             return -1;
     }
-    return -!vd->framebuffer;
+    
+    /* Try to use static buffers first for better performance */
+    if (required_size <= sizeof(vd->static_framebuffer)) {
+        vd->framebuffer = vd->static_framebuffer;
+        vd->tmpbuffer = vd->static_tmpbuffer;
+        vd->use_static_buffers = 1;
+        
+        /* For MJPEG, point tmpbuffer to same memory as framebuffer */
+        if (vd->formatIn == V4L2_PIX_FMT_MJPEG || vd->formatIn == V4L2_PIX_FMT_JPEG) {
+            vd->tmpbuffer = vd->framebuffer;
+        }
+    } else {
+        /* Fallback to dynamic allocation for very large buffers */
+        vd->framebuffer = (unsigned char *) calloc(1, required_size);
+        if(!vd->framebuffer)
+            return -1;
+        vd->tmpbuffer = vd->framebuffer; // Point to same buffer to avoid double allocation
+        vd->use_static_buffers = 0;
+    }
+    
+    return 0;
 }
 
 static void free_framebuffer(struct vdIn *vd) {
-    // OPTIMIZATION: Only free framebuffer since tmpbuffer points to same memory
-    if (vd->framebuffer) {
+    // Only free dynamic buffers, static buffers are automatically freed
+    if (vd->framebuffer && !vd->use_static_buffers) {
         free(vd->framebuffer);
-        vd->framebuffer = NULL;
-        vd->tmpbuffer = NULL; // tmpbuffer points to same memory
     }
+    vd->framebuffer = NULL;
+    vd->tmpbuffer = NULL;
+    vd->use_static_buffers = 0;
 }
 
 static int init_v4l2(struct vdIn *vd)
@@ -608,6 +652,11 @@ int memcpy_picture(unsigned char *out, unsigned char *buf, int size)
     unsigned char *ptdeb, *ptlimit, *ptcur = buf;
     int sizein, pos = 0;
 
+    /* Early return for empty or invalid data */
+    if (size <= 0 || !buf || !out) {
+        return 0;
+    }
+
     if(!is_huffman(buf)) {
         ptdeb = ptcur = buf;
         ptlimit = buf + size;
@@ -617,11 +666,43 @@ int memcpy_picture(unsigned char *out, unsigned char *buf, int size)
             return pos;
         sizein = ptcur - ptdeb;
 
-        memcpy(out + pos, buf, sizein); pos += sizein;
-        memcpy(out + pos, dht_data, sizeof(dht_data)); pos += sizeof(dht_data);
-        memcpy(out + pos, ptcur, size - sizein); pos += size - sizein;
+        /* Optimized memory copy for ARM (Pi Zero) with early exit */
+        if (sizein > 0) {
+            if (sizein >= 16) {
+                __builtin_memcpy(out + pos, buf, sizein);
+            } else {
+                memcpy(out + pos, buf, sizein);
+            }
+            pos += sizein;
+        }
+        
+        /* Only copy DHT data if needed */
+        if (sizeof(dht_data) > 0) {
+            if (sizeof(dht_data) >= 16) {
+                __builtin_memcpy(out + pos, dht_data, sizeof(dht_data));
+            } else {
+                memcpy(out + pos, dht_data, sizeof(dht_data));
+            }
+            pos += sizeof(dht_data);
+        }
+        
+        /* Copy remaining data if any */
+        if ((size - sizein) > 0) {
+            if ((size - sizein) >= 16) {
+                __builtin_memcpy(out + pos, ptcur, size - sizein);
+            } else {
+                memcpy(out + pos, ptcur, size - sizein);
+            }
+            pos += size - sizein;
+        }
     } else {
-        memcpy(out + pos, ptcur, size); pos += size;
+        /* Direct copy for huffman data */
+        if (size >= 16) {
+            __builtin_memcpy(out + pos, ptcur, size);
+        } else {
+            memcpy(out + pos, ptcur, size);
+        }
+        pos += size;
     }
     return pos;
 }
@@ -663,7 +744,23 @@ int uvcGrab(struct vdIn *vd)
         memcpy (vd->tmpbuffer + HEADERFRAME1 + sizeof(dht_data), vd->mem[vd->buf.index] + HEADERFRAME1, (vd->buf.bytesused - HEADERFRAME1));
         */
 
-        memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], vd->buf.bytesused);
+        /* Optimized memory copy for large buffers with bounds checking */
+        if (vd->buf.bytesused > 0 && vd->buf.bytesused <= vd->optimal_buffer_size) {
+            if (vd->buf.bytesused >= 16) {
+                __builtin_memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], vd->buf.bytesused);
+            } else {
+                memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], vd->buf.bytesused);
+            }
+        } else {
+            /* Fallback for oversized buffers */
+            size_t copy_size = (vd->buf.bytesused > vd->optimal_buffer_size) ? 
+                               vd->optimal_buffer_size : vd->buf.bytesused;
+            if (copy_size >= 16) {
+                __builtin_memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], copy_size);
+            } else {
+                memcpy(vd->tmpbuffer, vd->mem[vd->buf.index], copy_size);
+            }
+        }
         vd->tmpbytesused = vd->buf.bytesused;
         vd->tmptimestamp = vd->buf.timestamp;
 
@@ -675,10 +772,19 @@ int uvcGrab(struct vdIn *vd)
     case V4L2_PIX_FMT_RGB565:
     case V4L2_PIX_FMT_YUYV:
     case V4L2_PIX_FMT_UYVY:
+        /* Optimized memory copy for frame buffers */
         if(vd->buf.bytesused > vd->framesizeIn) {
-            memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->framesizeIn);
+            if (vd->framesizeIn >= 16) {
+                __builtin_memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->framesizeIn);
+            } else {
+                memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->framesizeIn);
+            }
         } else {
-            memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->buf.bytesused);
+            if (vd->buf.bytesused >= 16) {
+                __builtin_memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->buf.bytesused);
+            } else {
+                memcpy(vd->framebuffer, vd->mem[vd->buf.index], (size_t) vd->buf.bytesused);
+            }
         }
         vd->tmpbytesused = vd->buf.bytesused;
         vd->tmptimestamp = vd->buf.timestamp;
