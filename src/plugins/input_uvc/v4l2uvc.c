@@ -78,10 +78,21 @@ static void detect_simd_capabilities(void) {
     }
 }
 
-/* SIMD-optimized memory copy */
+/* Hybrid SIMD-optimized memory copy
+ * Strategy:
+ * - Small blocks (<64 bytes): Use __builtin_memcpy (compiler optimizations)
+ * - Large blocks (>=64 bytes): Use SIMD instructions if available
+ * - Fallback: Use __builtin_memcpy for unsupported architectures
+ */
 static void* simd_memcpy(void* dest, const void* src, size_t n) {
-    if (!simd_available || n < 16) {
-        return memcpy(dest, src, n);
+    /* For small blocks, use compiler-optimized memcpy */
+    if (n < 64) {
+        return __builtin_memcpy(dest, src, n);
+    }
+    
+    /* For large blocks, use SIMD if available */
+    if (!simd_available) {
+        return __builtin_memcpy(dest, src, n);
     }
     
 #if HAVE_SSE2
