@@ -97,9 +97,7 @@ endif()
 
 add_subdirectory(src/plugins/input_file)
 add_subdirectory(src/plugins/input_http)
-add_subdirectory(src/plugins/input_opencv)
 add_subdirectory(src/plugins/input_raspicam)
-add_subdirectory(src/plugins/input_ptp2)
 add_subdirectory(src/plugins/input_uvc)
 
 #
@@ -109,11 +107,9 @@ add_subdirectory(src/plugins/input_uvc)
 add_subdirectory(src/plugins/output_file)
 add_subdirectory(src/plugins/output_http)
 add_subdirectory(src/plugins/output_motion)
-add_subdirectory(src/plugins/output_qrscanner)
 add_subdirectory(src/plugins/output_rtsp)
 add_subdirectory(src/plugins/output_udp)
 add_subdirectory(src/plugins/output_viewer)
-add_subdirectory(src/plugins/output_zmqserver)
 
 #
 # mjpg_streamer executable

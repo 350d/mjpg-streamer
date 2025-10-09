@@ -5,7 +5,7 @@ A lightweight MJPEG streaming server for video capture devices, with motion dete
 ## Features
 
 - **Multiple input sources**: USB webcams (UVC), Raspberry Pi camera, HTTP streams, files
-- **Multiple output formats**: HTTP streaming, file saving, motion detection, RTSP, UDP
+- **Multiple output formats**: HTTP streaming, file saving, motion detection, RTSP, UDP, viewer
 - **Motion detection plugin**: Real-time motion detection with webhook notifications
 - **Cross-platform**: Works on Linux, Raspberry Pi, and other Unix-like systems
 - **Plugin architecture**: Modular design with input and output plugins
@@ -29,7 +29,7 @@ sudo apt install cmake build-essential libjpeg-dev libcurl4-openssl-dev
 sudo apt install v4l-utils
 
 # Optional dependencies (for additional plugins)
-sudo apt install libopencv-dev libgphoto2-dev
+# Note: OpenCV and GPhoto2 plugins have been removed for simplicity
 ```
 
 ### Building
@@ -106,7 +106,6 @@ ls plugins/
 - **input_raspicam.so**: Raspberry Pi camera module
 - **input_http.so**: HTTP stream input
 - **input_file.so**: File input (images/video)
-- **input_testpicture.so**: Test pattern generator
 
 ### Output Plugins
 
