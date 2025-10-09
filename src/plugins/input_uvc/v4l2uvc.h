@@ -86,6 +86,7 @@ struct vdIn {
     unsigned char *tmpbuffer;
     unsigned char *framebuffer;
     streaming_state streamingState;
+    void *context_ptr; /* pointer to context for pause signaling */
     int grabmethod;
     int width;
     int height;
@@ -142,6 +143,8 @@ typedef struct {
     globals *pglobal;
     pthread_t threadID;
     pthread_mutex_t controls_mutex;
+    pthread_cond_t pause_cond;
+    pthread_mutex_t pause_mutex;
     struct vdIn *videoIn;
     context_settings *init_settings;
 } context;

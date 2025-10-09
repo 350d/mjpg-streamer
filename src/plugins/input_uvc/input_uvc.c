@@ -158,6 +158,17 @@ int input_init(input_parameter *param, int id)
         IPRINT("could not initialize mutex variable\n");
         exit(EXIT_FAILURE);
     }
+    
+    /* initialize pause condition variable */
+    if(pthread_cond_init(&pctx->pause_cond, NULL) != 0) {
+        IPRINT("could not initialize pause condition variable\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    if(pthread_mutex_init(&pctx->pause_mutex, NULL) != 0) {
+        IPRINT("could not initialize pause mutex variable\n");
+        exit(EXIT_FAILURE);
+    }
 
     param->argv[0] = INPUT_PLUGIN_NAME;
 
@@ -453,6 +464,9 @@ int input_init(input_parameter *param, int id)
         closelog();
         exit(EXIT_FAILURE);
     }
+    
+    /* set context pointer for pause signaling */
+    pctx->videoIn->context_ptr = pctx;
 
     if (softfps > 0) {
         IPRINT("Framedrop FPS.....: %d\n", softfps);
@@ -675,7 +689,9 @@ void *cam_thread(void *arg)
 
     while(!pglobal->stop) {
         while(pcontext->videoIn->streamingState == STREAMING_PAUSED) {
-            usleep(1); // maybe not the best way so FIXME
+            pthread_mutex_lock(&pcontext->pause_mutex);
+            pthread_cond_wait(&pcontext->pause_cond, &pcontext->pause_mutex);
+            pthread_mutex_unlock(&pcontext->pause_mutex);
         }
 
         fd_set rd_fds; // for capture
@@ -856,6 +872,10 @@ void cam_cleanup(void *arg)
     free(in->buf);
     in->buf = NULL;
     in->size = 0;
+    
+    /* cleanup pause condition variable */
+    pthread_cond_destroy(&pctx->pause_cond);
+    pthread_mutex_destroy(&pctx->pause_mutex);
 }
 
 /******************************************************************************

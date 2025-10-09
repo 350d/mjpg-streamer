@@ -31,6 +31,16 @@
 
 static int debug = 0;
 
+/* Signal pause condition when streaming state changes */
+static void signal_pause_condition(struct vdIn *vd) {
+    if (vd->context_ptr) {
+        context *pctx = (context*)vd->context_ptr;
+        pthread_mutex_lock(&pctx->pause_mutex);
+        pthread_cond_signal(&pctx->pause_cond);
+        pthread_mutex_unlock(&pctx->pause_mutex);
+    }
+}
+
 /* fcc2s - convert pixelformat to string
 * (Obtained from vtl-utils: v4l2-ctl.cpp)
 * args:
@@ -500,6 +510,7 @@ int video_enable(struct vdIn *vd)
         return ret;
     }
     vd->streamingState = STREAMING_ON;
+    signal_pause_condition(vd);
     return 0;
 }
 
@@ -515,6 +526,7 @@ static int video_disable(struct vdIn *vd, streaming_state disabledState)
     }
     DBG("STopping capture done\n");
     vd->streamingState = disabledState;
+    signal_pause_condition(vd);
     return 0;
 }
 
@@ -970,6 +982,7 @@ void control_readed(struct vdIn *vd, struct v4l2_queryctrl *ctrl, globals *pglob
 int setResolution(struct vdIn *vd, int width, int height)
 {
     vd->streamingState = STREAMING_PAUSED;
+    signal_pause_condition(vd);
     if (video_disable(vd, STREAMING_PAUSED) < 0) {
         IPRINT("Unable to disable streaming\n");
         return -1;
