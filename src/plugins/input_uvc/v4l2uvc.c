@@ -263,6 +263,25 @@ static size_t calculate_optimal_buffer_size(int width, int height, int format) {
     return (base_size + 15) & ~15;
 }
 
+/* Get recommended static buffer size based on resolution */
+static size_t get_recommended_static_buffer_size(int width, int height, int format) {
+    size_t required = calculate_optimal_buffer_size(width, height, format);
+    
+    /* Common resolutions and their buffer sizes */
+    if (width <= 320 && height <= 240) {
+        return 320 * 240 * 4; /* VGA with margin */
+    } else if (width <= 640 && height <= 480) {
+        return 640 * 480 * 4; /* VGA with margin */
+    } else if (width <= 1280 && height <= 720) {
+        return 1280 * 720 * 4; /* HD with margin */
+    } else if (width <= 1920 && height <= 1080) {
+        return 1920 * 1080 * 4; /* Full HD with margin */
+    } else {
+        /* For larger resolutions, use dynamic allocation */
+        return 0;
+    }
+}
+
 static int init_framebuffer(struct vdIn *vd) {
     /* alloc a temp buffer to reconstruct the pict */
     vd->framesizeIn = (vd->width * vd->height << 1);
@@ -289,8 +308,12 @@ static int init_framebuffer(struct vdIn *vd) {
             return -1;
     }
     
+    /* Set static buffer size based on resolution */
+    size_t recommended_size = get_recommended_static_buffer_size(vd->width, vd->height, vd->formatIn);
+    vd->static_buffer_size = (recommended_size > 0) ? recommended_size : sizeof(vd->static_framebuffer);
+    
     /* Try to use static buffers first for better performance */
-    if (required_size <= sizeof(vd->static_framebuffer)) {
+    if (required_size <= vd->static_buffer_size) {
         vd->framebuffer = vd->static_framebuffer;
         vd->tmpbuffer = vd->static_tmpbuffer;
         vd->use_static_buffers = 1;
@@ -299,8 +322,13 @@ static int init_framebuffer(struct vdIn *vd) {
         if (vd->formatIn == V4L2_PIX_FMT_MJPEG || vd->formatIn == V4L2_PIX_FMT_JPEG) {
             vd->tmpbuffer = vd->framebuffer;
         }
+        
+        DBG("Using static buffers: %zu bytes (requested: %zu bytes)\n", 
+            vd->static_buffer_size, required_size);
     } else {
         /* Fallback to dynamic allocation for very large buffers */
+        DBG("Static buffer too small (%zu < %zu), using dynamic allocation\n", 
+            vd->static_buffer_size, required_size);
         vd->framebuffer = (unsigned char *) calloc(1, required_size);
         if(!vd->framebuffer)
             return -1;

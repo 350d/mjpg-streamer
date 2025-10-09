@@ -89,9 +89,10 @@ struct vdIn {
     void *context_ptr; /* pointer to context for pause signaling */
     
     /* Static buffers for performance optimization */
-    unsigned char static_framebuffer[1920 * 1080 * 3]; /* Max 1080p RGB24 */
-    unsigned char static_tmpbuffer[1920 * 1080 * 3];   /* Max 1080p RGB24 */
+    unsigned char static_framebuffer[640 * 480 * 4]; /* Default 640x480 with margin */
+    unsigned char static_tmpbuffer[640 * 480 * 4];   /* Default 640x480 with margin */
     int use_static_buffers; /* Flag to use static buffers */
+    size_t static_buffer_size; /* Actual size of static buffers */
     
     /* Buffer size optimization */
     size_t optimal_buffer_size; /* Pre-calculated optimal buffer size */
