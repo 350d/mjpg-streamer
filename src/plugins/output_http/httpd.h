@@ -126,6 +126,14 @@ typedef struct {
     char nocommands;
 } config;
 
+/* Write buffer for I/O optimization */
+typedef struct {
+    char buffer[BUFFER_SIZE * 4];  /* 4KB write buffer */
+    size_t buffer_pos;
+    int fd;
+    int use_buffering;
+} write_buffer;
+
 /* context of each server thread */
 typedef struct {
     int sd[MAX_SD_LEN];
@@ -135,6 +143,15 @@ typedef struct {
     pthread_t threadID;
 
     config conf;
+    
+    /* Performance optimization: static buffers */
+    unsigned char static_frame_buffer[MAX_FRAME_SIZE];
+    unsigned char static_header_buffer[BUFFER_SIZE];
+    int use_static_buffers;
+    size_t current_buffer_size;
+    
+    /* I/O optimization: write buffering */
+    write_buffer write_buf;
 } context;
 
 

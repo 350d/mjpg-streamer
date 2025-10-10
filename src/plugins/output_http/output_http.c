@@ -189,6 +189,17 @@ int output_init(output_parameter *param, int id)
     servers[param->id].conf.credentials = credentials;
     servers[param->id].conf.www_folder = www_folder;
     servers[param->id].conf.nocommands = nocommands;
+    
+    /* Initialize static buffers for performance optimization */
+    servers[param->id].use_static_buffers = 1;
+    servers[param->id].current_buffer_size = 0;
+    memset(servers[param->id].static_frame_buffer, 0, MAX_FRAME_SIZE);
+    memset(servers[param->id].static_header_buffer, 0, BUFFER_SIZE);
+    
+    /* Initialize write buffer for I/O optimization */
+    servers[param->id].write_buf.buffer_pos = 0;
+    servers[param->id].write_buf.fd = -1;  /* Will be set when client connects */
+    servers[param->id].write_buf.use_buffering = 1;
 
     OPRINT("www-folder-path......: %s\n", (www_folder == NULL) ? "disabled" : www_folder);
     OPRINT("HTTP TCP port........: %d\n", ntohs(port));

@@ -48,6 +48,25 @@
 #define LINUX_VERSION_CODE KERNEL_VERSION(3,0,0)
 #endif
 
+/* SIMD optimization headers */
+#ifdef __SSE2__
+#include <emmintrin.h>
+#define HAVE_SSE2 1
+#else
+#define HAVE_SSE2 0
+#endif
+
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#ifndef HAVE_NEON
+#define HAVE_NEON 1
+#endif
+#else
+#ifndef HAVE_NEON
+#define HAVE_NEON 0
+#endif
+#endif
+
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
 
@@ -55,6 +74,139 @@
 
 #include "../output_file/output_file.h"
 
+/* SIMD optimization variables */
+static int simd_available = 0;
+static int simd_type = 0; /* 0=none, 1=SSE2, 2=NEON */
+
+/* SIMD capability detection */
+static void detect_simd_capabilities(void) {
+    simd_available = 0;
+    simd_type = 0;
+    
+#if HAVE_SSE2
+    /* Check for SSE2 support */
+    simd_available = 1;
+    simd_type = 1;
+#elif HAVE_NEON
+    /* Check for NEON support */
+    simd_available = 1;
+    simd_type = 2;
+#endif
+}
+
+/* Hybrid SIMD-optimized memory copy */
+static void* simd_memcpy(void* dest, const void* src, size_t n) {
+    /* For small blocks, use compiler-optimized memcpy */
+    if (n < 64) {
+        return __builtin_memcpy(dest, src, n);
+    }
+    
+    /* For large blocks, use SIMD if available */
+    if (!simd_available) {
+        return __builtin_memcpy(dest, src, n);
+    }
+    
+#if HAVE_SSE2
+    if (simd_type == 1) {
+        /* SSE2 optimized copy */
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        /* Copy 16-byte chunks using SSE2 */
+        while (n >= 16) {
+            __m128i data = _mm_loadu_si128((__m128i*)s);
+            _mm_storeu_si128((__m128i*)d, data);
+            d += 16;
+            s += 16;
+            n -= 16;
+        }
+        
+        /* Handle remaining bytes */
+        if (n > 0) {
+            memcpy(d, s, n);
+        }
+        return dest;
+    }
+#endif
+
+#if HAVE_NEON
+    if (simd_type == 2) {
+        /* NEON optimized copy */
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        /* Copy 16-byte chunks using NEON */
+        while (n >= 16) {
+            uint8x16_t data = vld1q_u8((uint8_t*)s);
+            vst1q_u8((uint8_t*)d, data);
+            d += 16;
+            s += 16;
+            n -= 16;
+        }
+        
+        /* Handle remaining bytes */
+        if (n > 0) {
+            memcpy(d, s, n);
+        }
+        return dest;
+    }
+#endif
+
+    /* Fallback to builtin memcpy */
+    return __builtin_memcpy(dest, src, n);
+}
+
+/* Write buffer functions for I/O optimization */
+static int flush_write_buffer(write_buffer *wb);
+
+static void init_write_buffer(write_buffer *wb, int fd) {
+    wb->buffer_pos = 0;
+    wb->fd = fd;
+    wb->use_buffering = 1;
+    memset(wb->buffer, 0, sizeof(wb->buffer));
+}
+
+static int buffered_write(write_buffer *wb, const void *data, size_t len) {
+    if (!wb->use_buffering) {
+        return write(wb->fd, data, len);
+    }
+    
+    const char *src = (const char*)data;
+    size_t remaining = len;
+    
+    while (remaining > 0) {
+        size_t space_in_buffer = sizeof(wb->buffer) - wb->buffer_pos;
+        size_t to_copy = (remaining < space_in_buffer) ? remaining : space_in_buffer;
+        
+        memcpy(wb->buffer + wb->buffer_pos, src, to_copy);
+        wb->buffer_pos += to_copy;
+        src += to_copy;
+        remaining -= to_copy;
+        
+        /* Flush buffer if full */
+        if (wb->buffer_pos >= sizeof(wb->buffer)) {
+            if (flush_write_buffer(wb) < 0) {
+                return -1;
+            }
+        }
+    }
+    
+    return len;
+}
+
+static int flush_write_buffer(write_buffer *wb) {
+    if (wb->buffer_pos == 0) {
+        return 0;
+    }
+    
+    int result = write(wb->fd, wb->buffer, wb->buffer_pos);
+    if (result < 0) {
+        return -1;
+    }
+    
+    wb->buffer_pos = 0;
+    return result;
+}
 
 static globals *pglobal;
 extern context servers[MAX_OUTPUT_PLUGINS];
@@ -434,8 +586,17 @@ void send_snapshot(cfd *context_fd, int input_number)
 {
     unsigned char *frame = NULL;
     int frame_size = 0;
-    char buffer[BUFFER_SIZE] = {0};
+    char *buffer = NULL;
     struct timeval timestamp;
+    context *server_context = NULL;
+
+    /* Get server context for static buffers */
+    for (int i = 0; i < MAX_OUTPUT_PLUGINS; i++) {
+        if (servers[i].id == context_fd->pc->id) {
+            server_context = &servers[i];
+            break;
+        }
+    }
 
     /* wait for a fresh frame */
     pthread_mutex_lock(&pglobal->in[input_number].db);
@@ -444,19 +605,31 @@ void send_snapshot(cfd *context_fd, int input_number)
     /* read buffer */
     frame_size = pglobal->in[input_number].size;
     
-    /* allocate buffer for frame copy */
-    if(frame == NULL || frame_size > 10*1024*1024) { // 10MB limit
-        if(frame != NULL) free(frame);
-        frame = malloc(frame_size);
-        if(frame == NULL) {
+    /* Use static buffer if available and sufficient, otherwise fallback to dynamic */
+    if (server_context && server_context->use_static_buffers && frame_size <= MAX_FRAME_SIZE) {
+        frame = server_context->static_frame_buffer;
+        buffer = (char*)server_context->static_header_buffer;
+    } else {
+        /* Fallback to dynamic allocation for large frames */
+        if(frame == NULL || frame_size > 10*1024*1024) { // 10MB limit
+            if(frame != NULL) free(frame);
+            frame = malloc(frame_size);
+            if(frame == NULL) {
+                pthread_mutex_unlock(&pglobal->in[input_number].db);
+                LOG("not enough memory for frame buffer\n");
+                return;
+            }
+        }
+        buffer = malloc(BUFFER_SIZE);
+        if(buffer == NULL) {
             pthread_mutex_unlock(&pglobal->in[input_number].db);
-            LOG("not enough memory for frame buffer\n");
+            LOG("not enough memory for header buffer\n");
             return;
         }
     }
     
-    /* copy frame to our local buffer */
-    memcpy(frame, pglobal->in[input_number].buf, frame_size);
+    /* copy frame to our local buffer using SIMD optimization */
+    simd_memcpy(frame, pglobal->in[input_number].buf, frame_size);
 
     /* copy v4l2_buffer timeval to user space */
     timestamp = pglobal->in[input_number].timestamp;
@@ -480,7 +653,18 @@ void send_snapshot(cfd *context_fd, int input_number)
     /* send header and image now using global buffer directly */
     if (write(context_fd->fd, buffer, strlen(buffer)) < 0 ||
         write(context_fd->fd, frame, frame_size) < 0) {
+        /* Clean up dynamic buffers if used */
+        if (server_context && (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE)) {
+            if (frame != server_context->static_frame_buffer) free(frame);
+            if (buffer != (char*)server_context->static_header_buffer) free(buffer);
+        }
         return;
+    }
+    
+    /* Clean up dynamic buffers if used */
+    if (server_context && (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE)) {
+        if (frame != server_context->static_frame_buffer) free(frame);
+        if (buffer != (char*)server_context->static_header_buffer) free(buffer);
     }
 }
 
@@ -538,7 +722,7 @@ void send_stream(cfd *context_fd, int input_number)
         /* copy v4l2_buffer timeval to user space */
         timestamp = pglobal->in[input_number].timestamp;
 
-        memcpy(frame, pglobal->in[input_number].buf, frame_size);
+        simd_memcpy(frame, pglobal->in[input_number].buf, frame_size);
         DBG("got frame (size: %d kB)\n", frame_size / 1024);
 
         pthread_mutex_unlock(&pglobal->in[input_number].db);
@@ -645,7 +829,7 @@ void send_stream_wxp(cfd *context_fd, int input_number)
         update_client_timestamp(context_fd->client);
         #endif
 
-        memcpy(frame, pglobal->in[input_number].buf, frame_size);
+        simd_memcpy(frame, pglobal->in[input_number].buf, frame_size);
         DBG("got frame (size: %d kB)\n", frame_size / 1024);
 
         pthread_mutex_unlock(&pglobal->in[input_number].db);
@@ -1498,6 +1682,13 @@ void *server_thread(void *arg)
 
     context *pcontext = arg;
     pglobal = pcontext->pglobal;
+
+    /* Initialize SIMD capabilities on first server start */
+    static int simd_initialized = 0;
+    if (!simd_initialized) {
+        detect_simd_capabilities();
+        simd_initialized = 1;
+    }
 
     /* set cleanup handler to cleanup resources */
     pthread_cleanup_push(server_cleanup, pcontext);
