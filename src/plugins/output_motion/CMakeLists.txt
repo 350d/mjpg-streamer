@@ -54,6 +54,7 @@ endif()
 target_link_libraries(output_motion
     ${CMAKE_THREAD_LIBS_INIT}
     mjpg_streamer_utils
+    ${JPEG_LIBRARY}
 )
 
 # Set output directory

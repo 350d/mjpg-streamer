@@ -137,6 +137,7 @@ set (CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 # Create static library from utils.c and jpeg_utils.c for plugins
 add_library(mjpg_streamer_utils STATIC src/utils.c src/jpeg_utils.c)
+target_link_libraries(mjpg_streamer_utils ${JPEG_LIBRARY})
 
 add_executable(mjpg_streamer src/mjpg_streamer.c)
 
