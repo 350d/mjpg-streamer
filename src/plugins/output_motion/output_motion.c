@@ -762,6 +762,13 @@ void *worker_thread(void *arg)
     unsigned char *scaled_frame = NULL;
     double motion_level = 0.0;
 
+    /* Initialize SIMD capabilities */
+    static int simd_initialized = 0;
+    if (!simd_initialized) {
+        detect_simd_capabilities();
+        simd_initialized = 1;
+    }
+
     /* set cleanup handler to cleanup allocated resources */
     pthread_cleanup_push(worker_cleanup, NULL);
 
@@ -794,7 +801,7 @@ void *worker_thread(void *arg)
         }
         
         /* copy frame to our local buffer */
-        memcpy(current_frame, pglobal->in[input_number].buf, frame_size);
+        simd_memcpy(current_frame, pglobal->in[input_number].buf, frame_size);
 
         /* allow others to access the global buffer again */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
@@ -866,7 +873,7 @@ void *worker_thread(void *arg)
         }
         
         // Copy the already scaled data (no additional downsampling needed)
-        memcpy(scaled_frame, gray_data, scaled_width * scaled_height);
+        simd_memcpy(scaled_frame, gray_data, scaled_width * scaled_height);
         
         free(gray_data);
 
@@ -878,7 +885,7 @@ void *worker_thread(void *arg)
                 free(scaled_frame);
                 break;
             }
-            memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
             continue;
         }
 
@@ -908,7 +915,7 @@ void *worker_thread(void *arg)
             }
             /* Always update previous frame to prevent accumulation */
             /* The issue was that we were not updating prev_frame during motion */
-            memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
         } else if(motion_level >= overload_threshold) {
             /* Motion level too high - likely lighting change, ignore */
             time_t now = time(NULL);
@@ -920,10 +927,10 @@ void *worker_thread(void *arg)
                        motion_level, overload_threshold);
             }
             /* Still update previous frame to prevent accumulation */
-            memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
         } else {
             /* Update previous frame when no motion detected */
-            memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
         }
     }
 
