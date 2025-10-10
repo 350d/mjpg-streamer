@@ -203,7 +203,19 @@ int input_init(input_parameter *param, int id)
 int input_stop(int id)
 {
     DBG("will cancel input thread\n");
+    
+    /* Set stop flag first */
+    pglobal->stop = 1;
+    
+    /* Give thread a moment to see the stop flag */
+    usleep(10000); /* 10ms */
+    
+    /* Force cancel if still running */
     pthread_cancel(worker);
+    
+    /* Wait for thread to finish */
+    pthread_join(worker, NULL);
+    
     return 0;
 }
 
@@ -243,7 +255,7 @@ int input_run(int id)
         exit(EXIT_FAILURE);
     }
 
-    pthread_detach(worker);
+    /* Keep thread joinable for proper cleanup */
 
     return 0;
 }
@@ -295,6 +307,9 @@ void *worker_thread(void *arg)
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop) {
+        /* Check stop condition at the beginning of each iteration */
+        if(pglobal->stop) break;
+        
         if (mode == NewFilesOnly) {
 #ifdef __linux__
             /* Check if we should stop before blocking read */
@@ -314,6 +329,7 @@ void *worker_thread(void *arg)
                 break;
             } else if(select_result == 0) {
                 /* Timeout - check stop condition and continue */
+                if(pglobal->stop) break;
                 continue;
             }
             
