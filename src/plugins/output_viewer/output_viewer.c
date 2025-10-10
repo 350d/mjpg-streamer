@@ -28,10 +28,9 @@
 #include <syslog.h>
 
 #include <SDL/SDL.h>
-#include <jpeglib.h>
-
 
 #include "../../utils.h"
+#include "../../jpeg_utils.h"
 #include "../../mjpg_streamer.h"
 
 #define OUTPUT_PLUGIN_NAME "VIEWER output plugin"
@@ -74,174 +73,11 @@ void worker_cleanup(void *arg)
     SDL_Quit();
 }
 
-typedef struct {
-    struct jpeg_source_mgr pub;
+/* Use jpeg_utils for JPEG decompression */
 
-    Uint8 *jpegdata;
-    int jpegsize;
-} my_source_mgr;
+/* Use jpeg_rgb_image from jpeg_utils.h */
 
-static void init_source(j_decompress_ptr cinfo)
-{
-    return;
-}
-
-static int fill_input_buffer(j_decompress_ptr cinfo)
-{
-    my_source_mgr * src = (my_source_mgr *) cinfo->src;
-
-    src->pub.next_input_byte = src->jpegdata;
-    src->pub.bytes_in_buffer = src->jpegsize;
-
-    return TRUE;
-}
-
-static void skip_input_data(j_decompress_ptr cinfo, long num_bytes)
-{
-    my_source_mgr * src = (my_source_mgr *) cinfo->src;
-
-    if(num_bytes > 0) {
-        src->pub.next_input_byte += (size_t) num_bytes;
-        src->pub.bytes_in_buffer -= (size_t) num_bytes;
-    }
-}
-
-static void term_source(j_decompress_ptr cinfo)
-{
-    return;
-}
-
-static void jpeg_init_src(j_decompress_ptr cinfo, Uint8 *jpegdata, int jpegsize)
-{
-    my_source_mgr *src;
-
-    if(cinfo->src == NULL) {  /* first time for this JPEG object? */
-        cinfo->src = (struct jpeg_source_mgr *)(*cinfo->mem->alloc_small)((j_common_ptr) cinfo, JPOOL_PERMANENT, sizeof(my_source_mgr));
-        src = (my_source_mgr *) cinfo->src;
-    }
-
-    src = (my_source_mgr *) cinfo->src;
-    src->pub.init_source = init_source;
-    src->pub.fill_input_buffer = fill_input_buffer;
-    src->pub.skip_input_data = skip_input_data;
-    src->pub.resync_to_restart = jpeg_resync_to_restart;
-    src->pub.term_source = term_source;
-    src->pub.bytes_in_buffer = 0; /* forces fill_input_buffer on first read */
-    src->pub.next_input_byte = NULL; /* until buffer loaded */
-
-    src->jpegdata = jpegdata;
-    src->jpegsize = jpegsize;
-}
-
-static void my_error_exit(j_common_ptr cinfo)
-{
-    DBG("JPEG data contains an error\n");
-}
-
-static void my_error_output_message(j_common_ptr cinfo)
-{
-    DBG("JPEG data contains an error\n");
-}
-
-typedef struct {
-    int height;
-    int width;
-    unsigned char *buffer;
-    int buffersize;
-} decompressed_image;
-
-int decompress_jpeg(unsigned char *jpeg, int jpegsize, decompressed_image *image)
-{
-    struct jpeg_decompress_struct cinfo;
-    JSAMPROW rowptr[1];
-    struct jpeg_error_mgr jerr;
-
-    /* create an error handler that does not terminate MJPEG-streamer */
-    cinfo.err = jpeg_std_error(&jerr);
-    jerr.error_exit = my_error_exit;
-    jerr.output_message = my_error_output_message;
-
-    /* create the decompressor structures */
-    jpeg_create_decompress(&cinfo);
-
-    /* initalize the structures of decompressor */
-    jpeg_init_src(&cinfo, jpeg, jpegsize);
-
-    /* read the JPEG header data */
-    if(jpeg_read_header(&cinfo, TRUE) < 0) {
-        jpeg_destroy_decompress(&cinfo);
-        DBG("could not read the header\n");
-        return 1;
-    }
-
-    /*
-     * I just expect RGB colored JPEGs, so the num_components must be three
-     */
-    if(cinfo.num_components != 3) {
-        jpeg_destroy_decompress(&cinfo);
-        DBG("unsupported number of components (~colorspace)\n");
-        return 1;
-    }
-
-    /* just use RGB output and adjust decompression parameters */
-    cinfo.out_color_space = JCS_RGB;
-    cinfo.quantize_colors = FALSE;
-    /* to scale the decompressed image, the fraction could be changed here */
-    cinfo.scale_num   = 1;
-    cinfo.scale_denom = 1;
-    cinfo.dct_method = JDCT_FASTEST;
-    cinfo.do_fancy_upsampling = FALSE;
-
-    jpeg_calc_output_dimensions(&cinfo);
-
-    /* store the image information */
-    image->width = cinfo.output_width;
-    image->height = cinfo.output_height;
-
-    /*
-     * just allocate a new buffer if not already allocated
-     * pay a lot attention, that the calling function has to ensure, that the buffer
-     * must be large enough
-     */
-    if(image->buffer == NULL) {
-        image->buffersize = image->width * image->height * cinfo.num_components;
-        /* the calling function has to ensure that this buffer will become freed after use! */
-        image->buffer = malloc(image->buffersize);
-        if(image->buffer == NULL) {
-            jpeg_destroy_decompress(&cinfo);
-            DBG("allocating memory failed\n");
-            return 1;
-        }
-    }
-
-    /* start to decompress */
-    if(jpeg_start_decompress(&cinfo) < 0) {
-        jpeg_destroy_decompress(&cinfo);
-        DBG("could not start decompression\n");
-        return 1;
-    }
-
-    while(cinfo.output_scanline < cinfo.output_height) {
-        rowptr[0] = (JSAMPROW)(Uint8 *)image->buffer + cinfo.output_scanline * image->width * cinfo.num_components;
-
-        if(jpeg_read_scanlines(&cinfo, rowptr, (JDIMENSION) 1) < 0) {
-            jpeg_destroy_decompress(&cinfo);
-            DBG("could not decompress this line\n");
-            return 1;
-        }
-    }
-
-    if(jpeg_finish_decompress(&cinfo) < 0) {
-        jpeg_destroy_decompress(&cinfo);
-        DBG("could not finish compression\n");
-        return 1;
-    }
-
-    /* all is done */
-    jpeg_destroy_decompress(&cinfo);
-
-    return 0;
-}
+/* Use jpeg_decompress_to_rgb from jpeg_utils */
 
 /******************************************************************************
 Description.: this is the main worker thread
@@ -255,9 +91,9 @@ void *worker_thread(void *arg)
     int frame_size = 0, firstrun = 1;
 
     SDL_Surface *screen = NULL, *image = NULL;
-    decompressed_image rgbimage;
+    jpeg_rgb_image rgbimage;
 
-    /* initialze the buffer for the decompressed image */
+    /* initialize the buffer for the decompressed image */
     rgbimage.buffersize = 0;
     rgbimage.buffer = NULL;
 
@@ -288,10 +124,11 @@ void *worker_thread(void *arg)
         pthread_mutex_unlock(&pglobal->in[input_number].db);
 
         /* decompress the JPEG and store results in memory */
-        if(decompress_jpeg(frame, frame_size, &rgbimage)) {
+        if(jpeg_decompress_to_rgb(frame, frame_size, &rgbimage.buffer, &rgbimage.width, &rgbimage.height)) {
             DBG("could not properly decompress JPEG data\n");
             continue;
         }
+        rgbimage.buffersize = rgbimage.width * rgbimage.height * 3;
 
         if(firstrun) {
             /* create the primary surface (the visible window) */
@@ -307,16 +144,12 @@ void *worker_thread(void *arg)
 #endif
                                      0);
 
-            /* copy the decoded data across */
-            memcpy(image->pixels, rgbimage.buffer, rgbimage.width * rgbimage.height * 3);
-            free(rgbimage.buffer);
-
-            /* now, that we know the dimensions, we can directly copy to the right surface */
-            rgbimage.buffer = image->pixels;
-            rgbimage.buffersize = rgbimage.width * rgbimage.height * 3;
-
             firstrun = 0;
         }
+
+        /* copy the decoded data to the SDL surface */
+        memcpy(image->pixels, rgbimage.buffer, rgbimage.width * rgbimage.height * 3);
+        free(rgbimage.buffer);
 
         /* copy the image to the primary surface */
         SDL_BlitSurface(image, NULL, screen, NULL);
