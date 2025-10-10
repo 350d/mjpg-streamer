@@ -736,10 +736,7 @@ void send_snapshot(cfd *context_fd, int input_number)
     int frame_size = 0;
     char *buffer = NULL;
     struct timeval timestamp;
-    context *server_context = NULL;
-
-    /* Get server context for static buffers */
-    server_context = context_fd->pc;
+    context *server_context = context_fd->pc;
 
     /* wait for a fresh frame */
     pthread_mutex_lock(&pglobal->in[input_number].db);
@@ -785,30 +782,13 @@ void send_snapshot(cfd *context_fd, int input_number)
     update_client_timestamp(context_fd->client);
     #endif
 
-    /* write the response */
-    if (server_context) {
-        /* Use cached header for better performance */
-        if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
-            if (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE) {
-                if (frame != server_context->static_frame_buffer) free(frame);
-                if (buffer != (char*)server_context->static_header_buffer) free(buffer);
-            }
-            return;
+    /* write the response using cached header for better performance */
+    if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
+        if (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE) {
+            if (frame != server_context->static_frame_buffer) free(frame);
+            if (buffer != (char*)server_context->static_header_buffer) free(buffer);
         }
-    } else {
-        /* Fallback to sprintf for compatibility */
-        sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
-                "Access-Control-Allow-Origin: *\r\n" \
-                STD_HEADER \
-                "Content-type: image/jpeg\r\n" \
-                "X-Timestamp: %d.%06d\r\n" \
-                "\r\n", (int) timestamp.tv_sec, (int) timestamp.tv_usec);
-        
-        if(write(context_fd->fd, buffer, strlen(buffer)) < 0) {
-            if (frame != NULL) free(frame);
-            if (buffer != NULL) free(buffer);
-            return;
-        }
+        return;
     }
 
     /* send image data */
