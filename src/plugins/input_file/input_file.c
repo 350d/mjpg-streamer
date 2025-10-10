@@ -82,7 +82,6 @@ static struct inotify_event *ev;
 /* Static buffer for file data to avoid malloc/free in hot path */
 static unsigned char static_file_buffer[MAX_FILE_SIZE];
 static int use_static_buffers = 1;
-static int using_static_buffer = 0;  /* Flag to track if we're using static buffer */
 
 /*** plugin interface functions ***/
 int input_init(input_parameter *param, int id)
@@ -385,17 +384,15 @@ void *worker_thread(void *arg)
         pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
         /* allocate memory for frame - use static buffer if possible */
-        if(pglobal->in[plugin_number].buf != NULL && !using_static_buffer)
+        if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer)
             free(pglobal->in[plugin_number].buf);
 
         if (use_static_buffers && filesize <= MAX_FILE_SIZE) {
             /* Use static buffer for files up to MAX_FILE_SIZE */
             pglobal->in[plugin_number].buf = static_file_buffer;
-            using_static_buffer = 1;
         } else {
             /* Fallback to dynamic allocation for larger files */
             pglobal->in[plugin_number].buf = malloc(filesize + (1 << 16));
-            using_static_buffer = 0;
             if(pglobal->in[plugin_number].buf == NULL) {
                 fprintf(stderr, "could not allocate memory\n");
                 pthread_mutex_unlock(&pglobal->in[plugin_number].db);
@@ -411,12 +408,11 @@ void *worker_thread(void *arg)
         ssize_t bytes_read = buffered_read(&read_buf, pglobal->in[plugin_number].buf, filesize);
         if(bytes_read == -1) {
             perror("could not read from file");
-            if (!using_static_buffer) {
+            if (pglobal->in[plugin_number].buf != static_file_buffer) {
                 free(pglobal->in[plugin_number].buf);
             }
             pglobal->in[plugin_number].buf = NULL; 
             pglobal->in[plugin_number].size = 0;
-            using_static_buffer = 0;
             pthread_mutex_unlock(&pglobal->in[plugin_number].db);
             close(file);
             break;
@@ -470,7 +466,7 @@ void worker_cleanup(void *arg)
     first_run = 0;
     DBG("cleaning up resources allocated by input thread\n");
 
-    if(pglobal->in[plugin_number].buf != NULL && !using_static_buffer) {
+    if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer) {
         free(pglobal->in[plugin_number].buf);
     }
 
