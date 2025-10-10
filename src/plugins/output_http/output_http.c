@@ -243,7 +243,20 @@ int output_stop(int id)
 {
 
     DBG("will cancel server thread #%02d\n", id);
+    
+    /* Set stop flag first */
+    if(servers[id].pglobal) {
+        servers[id].pglobal->stop = 1;
+    }
+    
+    /* Give thread a moment to see the stop flag */
+    usleep(10000); /* 10ms */
+    
+    /* Force cancel if still running */
     pthread_cancel(servers[id].threadID);
+    
+    /* Wait for thread to finish */
+    pthread_join(servers[id].threadID, NULL);
     
     /* Clean up Stage 3 optimizations */
     cleanup_async_io(&servers[id].async_io);
@@ -263,7 +276,7 @@ int output_run(int id)
 
     /* create thread and pass context to thread function */
     pthread_create(&(servers[id].threadID), NULL, server_thread, &(servers[id]));
-    pthread_detach(servers[id].threadID);
+    /* Keep thread joinable for proper cleanup */
 
     return 0;
 }

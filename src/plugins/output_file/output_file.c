@@ -671,7 +671,21 @@ Return Value: always 0
 int output_stop(int id)
 {
     DBG("will cancel worker thread\n");
+    
+    /* Set stop flag first */
+    if(pglobal) {
+        pglobal->stop = 1;
+    }
+    
+    /* Give thread a moment to see the stop flag */
+    usleep(10000); /* 10ms */
+    
+    /* Force cancel if still running */
     pthread_cancel(worker);
+    
+    /* Wait for thread to finish */
+    pthread_join(worker, NULL);
+    
     return 0;
 }
 
@@ -684,7 +698,7 @@ int output_run(int id)
 {
     DBG("launching worker thread\n");
     pthread_create(&worker, 0, worker_thread, NULL);
-    pthread_detach(worker);
+    /* Keep thread joinable for proper cleanup */
     return 0;
 }
 
