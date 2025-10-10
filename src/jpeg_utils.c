@@ -406,6 +406,16 @@ Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
 {
+    static int debug_printed = 0;
+    if (!debug_printed) {
+        debug_printed = 1;
+#if JPEG_LIBRARY_TURBO
+        printf("jpeg_get_dimensions: Using TurboJPEG\n");
+#else
+        printf("jpeg_get_dimensions: Using libjpeg\n");
+#endif
+    }
+    
 #if JPEG_LIBRARY_TURBO
     /* TurboJPEG implementation */
     tjhandle handle = NULL;
@@ -413,10 +423,17 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     
     handle = tjInitDecompress();
     if (!handle) {
+        printf("TurboJPEG: tjInitDecompress() failed\n");
         return -1;
     }
     
     result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
+    if (result != 0) {
+        printf("TurboJPEG: tjDecompressHeader3() failed with code %d, jpeg_size=%d\n", result, jpeg_size);
+        if (jpeg_size > 0) {
+            printf("JPEG header: %02X %02X %02X %02X\n", jpeg_data[0], jpeg_data[1], jpeg_data[2], jpeg_data[3]);
+        }
+    }
     
     tjDestroy(handle);
     return (result == 0) ? 0 : -1;
