@@ -202,30 +202,30 @@ int input_init(input_parameter *param, int id)
 
 int input_stop(int id)
 {
-    DBG("input_file: will cancel input thread\n");
+    LOG("input_file: will cancel input thread\n");
     
     /* Set stop flag first */
     if(pglobal) {
         pglobal->stop = 1;
-        DBG("input_file: stop flag set to 1\n");
+        LOG("input_file: stop flag set to 1\n");
     } else {
-        DBG("input_file: pglobal is NULL!\n");
+        LOG("input_file: pglobal is NULL!\n");
     }
     
     /* Give thread multiple chances to see the stop flag */
     for(int i = 0; i < 10; i++) {
         usleep(1000); /* 1ms */
         if(pglobal && pglobal->stop) {
-            DBG("input_file: stop flag confirmed, thread should exit\n");
+            LOG("input_file: stop flag confirmed, thread should exit\n");
             break;
         }
-        DBG("input_file: waiting for stop flag, attempt %d\n", i+1);
+        LOG("input_file: waiting for stop flag, attempt %d\n", i+1);
     }
     
     /* Force cancel if still running */
-    DBG("input_file: calling pthread_cancel\n");
+    LOG("input_file: calling pthread_cancel\n");
     pthread_cancel(worker);
-    DBG("input_file: pthread_cancel completed\n");
+    LOG("input_file: pthread_cancel completed\n");
     
     /* Note: pthread_join removed to avoid blocking on unresponsive threads */
     
@@ -322,11 +322,11 @@ void *worker_thread(void *arg)
     while(!pglobal->stop) {
         /* Check stop condition at the beginning of each iteration */
         if(pglobal->stop) {
-            DBG("stop condition detected in main loop\n");
+            LOG("input_file: stop condition detected in main loop\n");
             break;
         }
         
-        DBG("input_file: starting new iteration, mode=%d\n", mode);
+        LOG("input_file: starting new iteration, mode=%d\n", mode);
         
         if (mode == NewFilesOnly) {
 #ifdef __linux__
@@ -341,16 +341,16 @@ void *worker_thread(void *arg)
             timeout.tv_sec = 0;  /* 100ms timeout */
             timeout.tv_usec = 100000;
             
-            DBG("input_file: calling select() with 100ms timeout\n");
+            LOG("input_file: calling select() with 100ms timeout\n");
             int select_result = select(fd + 1, &readfds, NULL, NULL, &timeout);
-            DBG("input_file: select() returned %d\n", select_result);
+            LOG("input_file: select() returned %d\n", select_result);
             
             if(select_result == -1) {
                 perror("select failed");
                 break;
             } else if(select_result == 0) {
                 /* Timeout - check stop condition and continue */
-                DBG("input_file: select timeout, checking stop condition\n");
+                LOG("input_file: select timeout, checking stop condition\n");
                 if(pglobal->stop) break;
                 continue;
             }
@@ -391,7 +391,7 @@ void *worker_thread(void *arg)
             /* Check stop condition in ExistingFiles mode */
             if(pglobal->stop) break;
             
-            DBG("input_file: processing file %d/%d: %s\n", currentFileNumber, fileCount, fileList[currentFileNumber]->d_name);
+            LOG("input_file: processing file %d/%d: %s\n", currentFileNumber, fileCount, fileList[currentFileNumber]->d_name);
             
             /* Optimized file extension check */
             const char *filename = fileList[currentFileNumber]->d_name;
@@ -432,7 +432,7 @@ void *worker_thread(void *arg)
         /* Check stop condition before file operations */
         if(pglobal->stop) break;
 
-        DBG("input_file: opening file: %s\n", buffer);
+        LOG("input_file: opening file: %s\n", buffer);
         /* open file for reading */
         rc = file = open(buffer, O_RDONLY);
         if(rc == -1) {
@@ -460,17 +460,17 @@ void *worker_thread(void *arg)
         /* Check stop condition before blocking mutex lock */
         if(pglobal->stop) break;
         
-        DBG("input_file: trying to lock mutex\n");
+        LOG("input_file: trying to lock mutex\n");
         /* Try to lock mutex without blocking */
         int lock_result = pthread_mutex_trylock(&pglobal->in[plugin_number].db);
         if(lock_result != 0) {
             close(file);
-            DBG("input_file: mutex lock failed (result=%d), checking stop condition\n", lock_result);
+            LOG("input_file: mutex lock failed (result=%d), checking stop condition\n", lock_result);
             if(pglobal->stop) break;
             usleep(10000); /* 10ms delay before retry */
             continue;
         }
-        DBG("input_file: mutex locked successfully\n");
+        LOG("input_file: mutex locked successfully\n");
 
         /* allocate memory for frame - use static buffer if possible */
         if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer)
@@ -497,14 +497,14 @@ void *worker_thread(void *arg)
             break;
         }
         
-        DBG("input_file: reading %zu bytes from file\n", filesize);
+        LOG("input_file: reading %zu bytes from file\n", filesize);
         /* Use direct read to avoid blocking in buffered_read */
         ssize_t bytes_read = read(file, pglobal->in[plugin_number].buf, filesize);
-        DBG("input_file: read %zd bytes\n", bytes_read);
+        LOG("input_file: read %zd bytes\n", bytes_read);
         
         /* Check stop condition immediately after read */
         if(pglobal->stop) {
-            DBG("input_file: stop condition detected after read\n");
+            LOG("input_file: stop condition detected after read\n");
             pthread_mutex_unlock(&pglobal->in[plugin_number].db);
             close(file);
             break;
@@ -543,16 +543,16 @@ void *worker_thread(void *arg)
 
         /* Split delay into smaller chunks to check stop condition */
         if(delay != 0) {
-            DBG("input_file: starting delay of %.1f seconds\n", delay);
+            LOG("input_file: starting delay of %.1f seconds\n", delay);
             int delay_ms = (int)(delay * 1000);
             int chunk_ms = 50; /* 50ms chunks */
             while(delay_ms > 0 && !pglobal->stop) {
                 int sleep_time = (delay_ms < chunk_ms) ? delay_ms : chunk_ms;
                 usleep(sleep_time * 1000);
                 delay_ms -= sleep_time;
-                DBG("input_file: delay remaining: %d ms\n", delay_ms);
+                LOG("input_file: delay remaining: %d ms\n", delay_ms);
             }
-            DBG("input_file: delay completed\n");
+            LOG("input_file: delay completed\n");
         }
         
         /* Add small delay in ExistingFiles mode to allow stop signal processing */
