@@ -104,45 +104,83 @@ static int has_huffman_tables(const unsigned char *jpeg_data, int jpeg_size) {
 /* Function to create enhanced JPEG data with Huffman tables */
 static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size, 
                                unsigned char **enhanced_data, int *enhanced_size) {
-    if (has_huffman_tables(jpeg_data, jpeg_size)) {
-        /* Already has Huffman tables, no need to enhance */
-        printf("JPEG already has Huffman tables, no enhancement needed\n");
-        *enhanced_data = (unsigned char*)jpeg_data;
-        *enhanced_size = jpeg_size;
-        return 0;
-    }
-    
-    printf("JPEG missing Huffman tables, creating enhanced version\n");
-    
-    /* Find position after SOI marker (0xFF 0xD8) */
+    /* Find SOI marker (0xFF 0xD8) */
     int soi_pos = -1;
     for (int i = 0; i < jpeg_size - 1; i++) {
         if (jpeg_data[i] == 0xFF && jpeg_data[i+1] == 0xD8) {
-            soi_pos = i + 2;
+            soi_pos = i;
             break;
         }
     }
     
     if (soi_pos == -1) {
+        printf("No SOI marker found in JPEG data\n");
         return -1; /* Invalid JPEG */
     }
     
+    /* Find EOI marker (0xFF 0xD9) */
+    int eoi_pos = -1;
+    for (int i = jpeg_size - 2; i >= soi_pos; i--) {
+        if (jpeg_data[i] == 0xFF && jpeg_data[i+1] == 0xD9) {
+            eoi_pos = i + 2; /* Include EOI marker */
+            break;
+        }
+    }
+    
+    if (eoi_pos == -1) {
+        printf("No EOI marker found in JPEG data\n");
+        return -1; /* Invalid JPEG */
+    }
+    
+    /* Extract clean JPEG frame from SOI to EOI */
+    int clean_size = eoi_pos - soi_pos;
+    const unsigned char *clean_data = jpeg_data + soi_pos;
+    
+    printf("Clean JPEG frame: size=%d, SOI at %d, EOI at %d\n", clean_size, soi_pos, eoi_pos);
+    
+    /* Check if clean frame has Huffman tables */
+    if (has_huffman_tables(clean_data, clean_size)) {
+        printf("Clean JPEG already has Huffman tables, no enhancement needed\n");
+        *enhanced_data = (unsigned char*)clean_data;
+        *enhanced_size = clean_size;
+        return 0;
+    }
+    
+    printf("Clean JPEG missing Huffman tables, creating enhanced version\n");
+    
+    /* Find SOS marker (0xFF 0xDA) to insert DHT before it */
+    int sos_pos = -1;
+    for (int i = 0; i < clean_size - 1; i++) {
+        if (clean_data[i] == 0xFF && clean_data[i+1] == 0xDA) {
+            sos_pos = i;
+            break;
+        }
+    }
+    
+    if (sos_pos == -1) {
+        printf("No SOS marker found in clean JPEG\n");
+        return -1;
+    }
+    
     /* Allocate memory for enhanced JPEG */
-    *enhanced_size = jpeg_size + sizeof(dht_data);
+    *enhanced_size = clean_size + sizeof(dht_data);
     *enhanced_data = malloc(*enhanced_size);
     if (!*enhanced_data) {
         return -1;
     }
     
-    /* Copy JPEG header up to SOI */
-    memcpy(*enhanced_data, jpeg_data, soi_pos);
+    /* Copy JPEG data up to SOS marker */
+    memcpy(*enhanced_data, clean_data, sos_pos);
     
-    /* Insert Huffman tables */
-    memcpy(*enhanced_data + soi_pos, dht_data, sizeof(dht_data));
+    /* Insert Huffman tables before SOS */
+    memcpy(*enhanced_data + sos_pos, dht_data, sizeof(dht_data));
     
-    /* Copy rest of JPEG data */
-    memcpy(*enhanced_data + soi_pos + sizeof(dht_data), 
-           jpeg_data + soi_pos, jpeg_size - soi_pos);
+    /* Copy rest of JPEG data (from SOS to EOI) */
+    memcpy(*enhanced_data + sos_pos + sizeof(dht_data), 
+           clean_data + sos_pos, clean_size - sos_pos);
+    
+    printf("Enhanced JPEG created: clean_size=%d, enhanced_size=%d, DHT inserted before SOS at %d\n", 
+           clean_size, *enhanced_size, sos_pos);
     
     return 0;
 }
