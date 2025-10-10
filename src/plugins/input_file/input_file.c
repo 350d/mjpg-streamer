@@ -578,8 +578,10 @@ void *worker_thread(void *arg)
         printf("input_file: about to check while condition, stop=%d\n", pglobal->stop);
     }
     printf("input_file: exited main loop, stop=%d\n", pglobal->stop);
+    printf("input_file: about to enter thread_quit section\n");
 
 thread_quit:
+    printf("input_file: in thread_quit section\n");
     while (fileCount--) {
        free(fileList[fileCount]);
     }
@@ -588,6 +590,8 @@ thread_quit:
     DBG("leaving input thread, calling cleanup function now\n");
     /* call cleanup handler, signal with the parameter */
     pthread_cleanup_pop(1);
+    
+    printf("input_file: worker_thread about to return NULL\n");
 
     return NULL;
 }
