@@ -598,15 +598,17 @@ thread_quit:
 
 void worker_cleanup(void *arg)
 {
+    printf("input_file: worker_cleanup called\n");
+    
     static unsigned char first_run = 1;
 
     if(!first_run) {
-        DBG("already cleaned up resources\n");
+        printf("input_file: already cleaned up resources\n");
         return;
     }
 
     first_run = 0;
-    DBG("cleaning up resources allocated by input thread\n");
+    printf("input_file: cleaning up resources allocated by input thread\n");
 
     if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer) {
         free(pglobal->in[plugin_number].buf);
@@ -627,6 +629,8 @@ void worker_cleanup(void *arg)
         }
 #endif
     }
+    
+    printf("input_file: worker_cleanup completed\n");
 }
 
 /* Buffered I/O implementation */
