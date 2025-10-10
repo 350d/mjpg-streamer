@@ -31,6 +31,28 @@
 #ifdef HAVE_TURBOJPEG
     #include <turbojpeg.h>
     #define JPEG_LIBRARY_TURBO 1
+    /* TurboJPEG doesn't need these macros, define them as empty */
+    #define METHODDEF(type) type
+    #define GLOBAL(type) type
+    /* Define libjpeg types for compatibility */
+    typedef unsigned char JOCTET;
+    typedef struct jpeg_compress_struct *j_compress_ptr;
+    typedef struct jpeg_common_struct *j_common_ptr;
+    typedef unsigned char **JSAMPROW;
+    typedef JSAMPROW *JSAMPARRAY;
+    typedef int boolean;
+    #define TRUE 1
+    #define FALSE 0
+    #define JPOOL_IMAGE 0
+    #define JPOOL_PERMANENT 1
+    /* Define jpeg_destination_mgr structure for TurboJPEG compatibility */
+    struct jpeg_destination_mgr {
+        void (*init_destination)(j_compress_ptr cinfo);
+        boolean (*empty_output_buffer)(j_compress_ptr cinfo);
+        void (*term_destination)(j_compress_ptr cinfo);
+        JOCTET *next_output_byte;
+        size_t free_in_buffer;
+    };
 #elif defined(__linux__)
     #include <jpeglib.h>
     #define JPEG_LIBRARY_TURBO 0
