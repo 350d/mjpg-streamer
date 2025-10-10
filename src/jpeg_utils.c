@@ -419,7 +419,7 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
     
     tjDestroy(handle);
-    return result;
+    return (result == 0) ? 0 : -1;
 #else
     /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
@@ -484,7 +484,7 @@ int jpeg_validate_data(unsigned char *jpeg_data, int jpeg_size)
     result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, NULL, NULL, NULL, NULL);
     
     tjDestroy(handle);
-    return result;
+    return (result == 0) ? 0 : -1;
 #else
     /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
@@ -588,7 +588,7 @@ int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scal
     }
     
     tjDestroy(handle);
-    return result;
+    return (result == 0) ? 0 : -1;
 #else
     /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
@@ -713,7 +713,7 @@ int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size,
     }
     
     tjDestroy(handle);
-    return result;
+    return (result == 0) ? 0 : -1;
 #else
     /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
