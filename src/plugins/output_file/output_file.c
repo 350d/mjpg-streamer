@@ -53,6 +53,65 @@ static char *mjpgFileName = NULL;
 static char *linkFileName = NULL;
 static char *fixedFileName = NULL;
 
+/* Performance optimization: static buffers */
+#define MAX_FRAME_SIZE (256*1024)  /* 256KB for typical JPEG frames */
+#define BUFFER_SIZE 1024           /* 1KB buffer size */
+static unsigned char static_framebuffer[MAX_FRAME_SIZE];
+static int use_static_buffers = 1;
+
+/* File I/O buffering for better performance */
+typedef struct {
+    char buffer[BUFFER_SIZE * 4];  /* 4KB write buffer */
+    size_t buffer_pos;
+    int fd;
+    int use_buffering;
+} file_write_buffer;
+
+static file_write_buffer file_buf = {0};
+
+/* File I/O buffering functions */
+static void init_file_buffer(file_write_buffer *buf, int fd) {
+    buf->buffer_pos = 0;
+    buf->fd = fd;
+    buf->use_buffering = 1;
+}
+
+static int buffered_write(file_write_buffer *buf, const void *data, size_t len) {
+    if (!buf->use_buffering) {
+        return write(buf->fd, data, len);
+    }
+    
+    const char *src = (const char*)data;
+    size_t remaining = len;
+    
+    while (remaining > 0) {
+        size_t space_in_buffer = sizeof(buf->buffer) - buf->buffer_pos;
+        size_t to_copy = (remaining < space_in_buffer) ? remaining : space_in_buffer;
+        
+        memcpy(buf->buffer + buf->buffer_pos, src, to_copy);
+        buf->buffer_pos += to_copy;
+        src += to_copy;
+        remaining -= to_copy;
+        
+        /* Flush buffer if full */
+        if (buf->buffer_pos >= sizeof(buf->buffer)) {
+            if (write(buf->fd, buf->buffer, buf->buffer_pos) < 0) return -1;
+            buf->buffer_pos = 0;
+        }
+    }
+    
+    return len;
+}
+
+static int flush_file_buffer(file_write_buffer *buf) {
+    if (buf->buffer_pos > 0) {
+        int result = write(buf->fd, buf->buffer, buf->buffer_pos);
+        buf->buffer_pos = 0;
+        return result;
+    }
+    return 0;
+}
+
 /******************************************************************************
 Description.: print a help message
 Input Value.: -
@@ -152,6 +211,9 @@ void maintain_ringbuffer(int size)
     struct dirent **namelist;
     int n, i;
     char buffer[1<<16];
+    struct stat file_stat;
+    time_t oldest_time = 0;
+    char *oldest_file = NULL;
 
     /* do nothing if ringbuffer is not set or wrong value is set */
     if(size < 0) return;
@@ -165,30 +227,54 @@ void maintain_ringbuffer(int size)
 
     DBG("found %d directory entries\n", n);
 
-    /* delete the first (thus oldest) number of files */
-    for(i = 0; i < (n - size); i++) {
-
-        /* put together the folder name and the directory item */
-        snprintf(buffer, sizeof(buffer), "%s/%s", folder, namelist[i]->d_name);
-
-        DBG("delete: %s\n", buffer);
-
-        /* mark item for deletion */
-        if(unlink(buffer) == -1) {
-            perror("could not delete file");
+    /* If we have more files than the ringbuffer size, delete oldest ones */
+    if(n > size) {
+        int files_to_delete = n - size;
+        
+        /* Find and delete the oldest files */
+        for(int delete_count = 0; delete_count < files_to_delete; delete_count++) {
+            oldest_time = 0;
+            oldest_file = NULL;
+            int oldest_index = -1;
+            
+            /* Find the oldest file */
+            for(i = 0; i < n; i++) {
+                if(namelist[i] == NULL) continue; /* Already processed */
+                
+                snprintf(buffer, sizeof(buffer), "%s/%s", folder, namelist[i]->d_name);
+                if(stat(buffer, &file_stat) == 0) {
+                    if(oldest_time == 0 || file_stat.st_mtime < oldest_time) {
+                        oldest_time = file_stat.st_mtime;
+                        oldest_file = namelist[i]->d_name;
+                        oldest_index = i;
+                    }
+                }
+            }
+            
+            /* Delete the oldest file */
+            if(oldest_index >= 0) {
+                snprintf(buffer, sizeof(buffer), "%s/%s", folder, namelist[oldest_index]->d_name);
+                DBG("delete: %s\n", buffer);
+                
+                if(unlink(buffer) == -1) {
+                    perror("could not delete file");
+                }
+                
+                free(namelist[oldest_index]);
+                namelist[oldest_index] = NULL;
+            }
         }
-
-        /* free allocated memory for name */
-        free(namelist[i]);
     }
 
-    /* keep the rest, but we still have to free every result */
-    for(i = MAX(n - size, 0); i < n; i++) {
-        DBG("keep: %s\n", namelist[i]->d_name);
-        free(namelist[i]);
+    /* free remaining allocated memory */
+    for(i = 0; i < n; i++) {
+        if(namelist[i] != NULL) {
+            DBG("keep: %s\n", namelist[i]->d_name);
+            free(namelist[i]);
+        }
     }
 
-    /* free last just allocated resources */
+    /* free the namelist array */
     free(namelist);
 }
 
@@ -206,6 +292,13 @@ void *worker_thread(void *arg)
     time_t t;
     struct tm *now;
     unsigned char *tmp_framebuffer = NULL;
+    
+    /* Initialize SIMD capabilities for optimal performance */
+    static int simd_initialized = 0;
+    if (!simd_initialized) {
+        detect_simd_capabilities();
+        simd_initialized = 1;
+    }
 
     /* set cleanup handler to cleanup allocated resources */
     pthread_cleanup_push(worker_cleanup, NULL);
@@ -219,20 +312,27 @@ void *worker_thread(void *arg)
         /* read buffer */
         frame_size = pglobal->in[input_number].size;
 
-        /* allocate buffer for frame copy */
-        if(tmp_framebuffer == NULL || frame_size > 1024*1024) { // 1MB limit
-            if(tmp_framebuffer != NULL) free(tmp_framebuffer);
-            tmp_framebuffer = malloc(frame_size);
-            if(tmp_framebuffer == NULL) {
-                pthread_mutex_unlock(&pglobal->in[input_number].db);
-                LOG("not enough memory for frame buffer\n");
-                break;
+        /* Use static buffer if available and sufficient, otherwise fallback to dynamic */
+        unsigned char *current_frame = NULL;
+        if (use_static_buffers && frame_size <= MAX_FRAME_SIZE) {
+            /* Use static buffer for better performance */
+            current_frame = static_framebuffer;
+        } else {
+            /* Fallback to dynamic allocation for large frames */
+            if(tmp_framebuffer == NULL || frame_size > 1024*1024) { // 1MB limit
+                if(tmp_framebuffer != NULL) free(tmp_framebuffer);
+                tmp_framebuffer = malloc(frame_size);
+                if(tmp_framebuffer == NULL) {
+                    pthread_mutex_unlock(&pglobal->in[input_number].db);
+                    LOG("not enough memory for frame buffer\n");
+                    break;
+                }
             }
+            current_frame = tmp_framebuffer;
         }
         
-        /* copy frame to our local buffer */
-        memcpy(tmp_framebuffer, pglobal->in[input_number].buf, frame_size);
-        unsigned char *current_frame = tmp_framebuffer;
+        /* copy frame to our local buffer using SIMD optimization */
+        simd_memcpy(current_frame, pglobal->in[input_number].buf, frame_size);
 
         /* allow others to access the global buffer again */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
@@ -273,14 +373,20 @@ void *worker_thread(void *arg)
                 return NULL;
             }
 
-            /* save picture to file using global buffer directly */
-            if(write(fd, current_frame, frame_size) < 0) {
+            /* Initialize file buffer for better I/O performance */
+            init_file_buffer(&file_buf, fd);
+
+            /* save picture to file using buffered write */
+            if(buffered_write(&file_buf, current_frame, frame_size) < 0) {
                 OPRINT("could not write to file %s\n", buffer2);
                 perror("write()");
+                flush_file_buffer(&file_buf);
                 close(fd);
                 return NULL;
             }
 
+            /* Flush any remaining data and close file */
+            flush_file_buffer(&file_buf);
             close(fd);
 
             /* link the picture as fixed name file */
@@ -327,10 +433,16 @@ void *worker_thread(void *arg)
                 }
             }
         } else { // recording to MJPG file
-            /* save picture to file using global buffer directly */
-            if(write(fd, current_frame, frame_size) < 0) {
+            /* Initialize file buffer if not already done */
+            if (file_buf.fd != fd) {
+                init_file_buffer(&file_buf, fd);
+            }
+            
+            /* save picture to file using buffered write */
+            if(buffered_write(&file_buf, current_frame, frame_size) < 0) {
                 OPRINT("could not write to file %s\n", buffer2);
                 perror("write()");
+                flush_file_buffer(&file_buf);
                 close(fd);
                 return NULL;
             }
