@@ -24,14 +24,31 @@
 *******************************************************************************/
 
 #include <stdio.h>
-#include <jpeglib.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 
-#include <linux/types.h>          /* for videodev2.h */
-#include <linux/videodev2.h>
+/* Try to include TurboJPEG first, fallback to libjpeg */
+#ifdef HAVE_TURBOJPEG
+    #include <turbojpeg.h>
+    #define JPEG_LIBRARY_TURBO 1
+#elif defined(__linux__)
+    #include <jpeglib.h>
+    #define JPEG_LIBRARY_TURBO 0
+#endif
 
-#include "plugins/input_uvc/v4l2uvc.h"
+/* Linux-specific includes */
+#ifdef __linux__
+    #include <linux/types.h>          /* for videodev2.h */
+    #include <linux/videodev2.h>
+    #include "plugins/input_uvc/v4l2uvc.h"
+#endif
 
+/* Global JPEG library state */
+static int jpeg_library_detected = 0;
+static int jpeg_library_type = 0;  /* 0 = libjpeg, 1 = turbojpeg */
+static void *turbojpeg_handle = NULL;
+
+#ifdef __linux__
 #define OUTPUT_BUF_SIZE  4096
 
 typedef struct {
@@ -126,6 +143,7 @@ GLOBAL(void) dest_buffer(j_compress_ptr cinfo, unsigned char *buffer, int size, 
     dest->written = written;
 }
 
+#ifdef __linux__
 /******************************************************************************
 Description.: yuv2jpeg function is based on compress_yuyv_to_jpeg written by
               Gabriel A. Devenyi.
@@ -279,6 +297,7 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
 
     return (written);
 }
+#endif /* __linux__ */
 
 /******************************************************************************
 Description.: Get JPEG dimensions from JPEG data
@@ -508,4 +527,51 @@ int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size,
 
     *rgb_data = output_data;
     return 0;
+}
+#endif /* __linux__ */
+
+/******************************************************************************
+Description.: Detect available JPEG library (TurboJPEG or libjpeg)
+Input Value.: None
+Return Value: 0 if libjpeg, 1 if turbojpeg, -1 if none available
+******************************************************************************/
+int detect_jpeg_library(void)
+{
+    if(jpeg_library_detected) {
+        return jpeg_library_type;
+    }
+
+    /* Try to load TurboJPEG dynamically */
+    turbojpeg_handle = dlopen("libturbojpeg.so", RTLD_LAZY);
+    if(turbojpeg_handle) {
+        /* Check if we can get the version function */
+        void *version_func = dlsym(turbojpeg_handle, "tjGetVersion");
+        if(version_func) {
+            jpeg_library_type = 1;  /* TurboJPEG available */
+            jpeg_library_detected = 1;
+            printf("JPEG: Using TurboJPEG library\n");
+            return 1;
+        }
+        dlclose(turbojpeg_handle);
+        turbojpeg_handle = NULL;
+    }
+
+    /* Fallback to libjpeg */
+    jpeg_library_type = 0;  /* libjpeg */
+    jpeg_library_detected = 1;
+    printf("JPEG: Using libjpeg library\n");
+    return 0;
+}
+
+/******************************************************************************
+Description.: Check if JPEG library is available
+Input Value.: None
+Return Value: 1 if available, 0 if not
+******************************************************************************/
+int jpeg_library_available(void)
+{
+    if(!jpeg_library_detected) {
+        detect_jpeg_library();
+    }
+    return jpeg_library_detected;
 }

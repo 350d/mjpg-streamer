@@ -72,22 +72,31 @@ set (MJPG_STREAMER_PLUGIN_INSTALL_PATH "lib/mjpg-streamer")
 # Global dependencies
 #
 
-# Find JPEG library with cross-compilation support
-if(JPEG_INCLUDE_DIR AND JPEG_LIBRARY)
-    # Use provided JPEG paths for cross-compilation
-    set(JPEG_FOUND TRUE)
-    message(STATUS "Using provided JPEG: ${JPEG_LIBRARY}")
+# Find TurboJPEG first, fallback to libjpeg
+find_library(TURBOJPEG_LIB turbojpeg)
+if(TURBOJPEG_LIB)
+    set(TURBOJPEG_FOUND TRUE)
+    set(JPEG_LIBRARY ${TURBOJPEG_LIB})
+    add_definitions(-DHAVE_TURBOJPEG)
+    message(STATUS "Found TurboJPEG: ${TURBOJPEG_LIB}")
 else()
-    # Find JPEG library normally
-    find_library(JPEG_LIB jpeg)
-    if(JPEG_LIB)
-        set(JPEG_LIBRARY ${JPEG_LIB})
+    # Fallback to regular JPEG library
+    if(JPEG_INCLUDE_DIR AND JPEG_LIBRARY)
+        # Use provided JPEG paths for cross-compilation
         set(JPEG_FOUND TRUE)
+        message(STATUS "Using provided JPEG: ${JPEG_LIBRARY}")
+    else()
+        # Find JPEG library normally
+        find_library(JPEG_LIB jpeg)
+        if(JPEG_LIB)
+            set(JPEG_LIBRARY ${JPEG_LIB})
+            set(JPEG_FOUND TRUE)
+        endif()
     endif()
-endif()
-
-if(NOT JPEG_FOUND)
-    message(FATAL_ERROR "JPEG library not found. Please install libjpeg-dev or provide JPEG_INCLUDE_DIR and JPEG_LIBRARY for cross-compilation.")
+    
+    if(NOT JPEG_FOUND)
+        message(FATAL_ERROR "JPEG library not found. Please install libjpeg-dev or libturbojpeg-dev or provide JPEG_INCLUDE_DIR and JPEG_LIBRARY for cross-compilation.")
+    endif()
 endif()
 
 
@@ -126,8 +135,8 @@ set (CMAKE_INSTALL_RPATH ${CMAKE_INSTALL_PREFIX}/${MJPG_STREAMER_PLUGIN_INSTALL_
 set (CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 
-# Create static library from utils.c for plugins
-add_library(mjpg_streamer_utils STATIC src/utils.c)
+# Create static library from utils.c and jpeg_utils.c for plugins
+add_library(mjpg_streamer_utils STATIC src/utils.c src/jpeg_utils.c)
 
 add_executable(mjpg_streamer src/mjpg_streamer.c)
 
