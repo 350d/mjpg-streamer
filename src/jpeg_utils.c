@@ -115,7 +115,6 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     }
     
     if (soi_pos == -1) {
-        printf("No SOI marker found in JPEG data\n");
         return -1; /* Invalid JPEG */
     }
     
@@ -129,7 +128,6 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     }
     
     if (eoi_pos == -1) {
-        printf("No EOI marker found in JPEG data\n");
         return -1; /* Invalid JPEG */
     }
     
@@ -137,17 +135,12 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     int clean_size = eoi_pos - soi_pos;
     const unsigned char *clean_data = jpeg_data + soi_pos;
     
-    printf("Clean JPEG frame: size=%d, SOI at %d, EOI at %d\n", clean_size, soi_pos, eoi_pos);
-    
     /* Check if clean frame has Huffman tables */
     if (has_huffman_tables(clean_data, clean_size)) {
-        printf("Clean JPEG already has Huffman tables, no enhancement needed\n");
         *enhanced_data = (unsigned char*)clean_data;
         *enhanced_size = clean_size;
         return 0;
     }
-    
-    printf("Clean JPEG missing Huffman tables, creating enhanced version\n");
     
     /* Find SOS marker (0xFF 0xDA) to insert DHT before it */
     int sos_pos = -1;
@@ -159,7 +152,6 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     }
     
     if (sos_pos == -1) {
-        printf("No SOS marker found in clean JPEG\n");
         return -1;
     }
     
@@ -180,17 +172,12 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     simd_memcpy(*enhanced_data + sos_pos + sizeof(dht_data), 
                 clean_data + sos_pos, clean_size - sos_pos);
     
-    printf("Enhanced JPEG created: clean_size=%d, enhanced_size=%d, DHT inserted before SOS at %d\n", 
-           clean_size, *enhanced_size, sos_pos);
-    
     /* Verify enhanced JPEG structure */
     if ((*enhanced_data)[0] != 0xFF || (*enhanced_data)[1] != 0xD8) {
-        printf("ERROR: Enhanced JPEG does not start with SOI marker!\n");
         free(*enhanced_data);
         return -1;
     }
     if ((*enhanced_data)[*enhanced_size-2] != 0xFF || (*enhanced_data)[*enhanced_size-1] != 0xD9) {
-        printf("ERROR: Enhanced JPEG does not end with EOI marker!\n");
         free(*enhanced_data);
         return -1;
     }
@@ -563,56 +550,27 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     unsigned char *enhanced_data = NULL;
     int enhanced_size = 0;
     
-    /* Sanity check: TurboJPEG is available */
-    printf("Using TurboJPEG library\n");
-    
-    /* Sanity check: validate arguments */
+    /* Validate arguments */
     if (!jpeg_data || jpeg_size <= 0 || !width || !height) {
-        printf("ERROR: Invalid arguments - jpeg_data=%p, jpeg_size=%d, width=%p, height=%p\n", 
-               jpeg_data, jpeg_size, width, height);
         return -1;
     }
     
     handle = tjInitDecompress();
     if (!handle) {
-        printf("ERROR: tjInitDecompress() failed: %s\n", tjGetErrorStr());
         return -1;
     }
     
-    printf("TurboJPEG handle created successfully\n");
-    
-    /* Use tjDecompressHeader2 as primary function (tjDecompressHeader3 doesn't work on this TurboJPEG version) */
-    printf("Calling tjDecompressHeader2 with original data: size=%d (unsigned long: %lu)\n", 
-           jpeg_size, (unsigned long)jpeg_size);
-    printf("Buffer address: %p, width ptr: %p, height ptr: %p\n", jpeg_data, width, height);
-    
+    /* Use tjDecompressHeader2 as primary function */
     int subsamp;
     result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, width, height, &subsamp);
     if (result == 0) {
-        printf("TurboJPEG success: %dx%d, subsamp=%d\n", *width, *height, subsamp);
         tjDestroy(handle);
         return 0;  /* Success with original data */
     }
     
-    printf("TurboJPEG original failed: %s\n", tjGetErrorStr2(handle));
-    
     /* Try with enhanced data (with Huffman tables) */
     if (create_enhanced_jpeg(jpeg_data, jpeg_size, &enhanced_data, &enhanced_size) == 0) {
-        printf("Enhanced JPEG created: original_size=%d, enhanced_size=%d\n", jpeg_size, enhanced_size);
-        printf("Enhanced JPEG header: %02X %02X %02X %02X\n", enhanced_data[0], enhanced_data[1], enhanced_data[2], enhanced_data[3]);
-        printf("Enhanced JPEG tail: %02X %02X %02X %02X\n", 
-               enhanced_data[enhanced_size-4], enhanced_data[enhanced_size-3], 
-               enhanced_data[enhanced_size-2], enhanced_data[enhanced_size-1]);
-        printf("Calling tjDecompressHeader2 with enhanced data: size=%d (unsigned long: %lu)\n", 
-               enhanced_size, (unsigned long)enhanced_size);
-        printf("Enhanced buffer address: %p\n", enhanced_data);
         result = tjDecompressHeader2(handle, enhanced_data, (unsigned long)enhanced_size, width, height, &subsamp);
-        printf("TurboJPEG enhanced result: %d\n", result);
-        if (result == 0) {
-            printf("TurboJPEG enhanced success: %dx%d, subsamp=%d\n", *width, *height, subsamp);
-        } else {
-            printf("TurboJPEG enhanced error: %s\n", tjGetErrorStr2(handle));
-        }
         if (enhanced_data != jpeg_data) {
             free(enhanced_data);
         }
