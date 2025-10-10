@@ -350,6 +350,9 @@ void *worker_thread(void *arg)
             continue;
 #endif
         } else {
+            /* Check stop condition in ExistingFiles mode */
+            if(pglobal->stop) break;
+            
             /* Optimized file extension check */
             const char *filename = fileList[currentFileNumber]->d_name;
             const char *ext = strrchr(filename, '.');
@@ -383,6 +386,9 @@ void *worker_thread(void *arg)
                 continue;
             }
         }
+
+        /* Check stop condition before file operations */
+        if(pglobal->stop) break;
 
         /* open file for reading */
         rc = file = open(buffer, O_RDONLY);
@@ -460,6 +466,11 @@ void *worker_thread(void *arg)
 
         if(delay != 0)
             usleep(1000 * 1000 * delay);
+        
+        /* Add small delay in ExistingFiles mode to allow stop signal processing */
+        if (mode == ExistingFiles) {
+            usleep(10000); /* 10ms delay */
+        }
     }
 
 thread_quit:
