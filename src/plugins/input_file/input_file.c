@@ -425,7 +425,18 @@ void *worker_thread(void *arg)
         filesize = stats.st_size;
 
         /* copy frame from file to global buffer */
-        pthread_mutex_lock(&pglobal->in[plugin_number].db);
+        /* Check stop condition before blocking mutex lock */
+        if(pglobal->stop) break;
+        
+        /* Try to lock mutex without blocking */
+        int lock_result = pthread_mutex_trylock(&pglobal->in[plugin_number].db);
+        if(lock_result != 0) {
+            close(file);
+            DBG("mutex lock failed, checking stop condition\n");
+            if(pglobal->stop) break;
+            usleep(10000); /* 10ms delay before retry */
+            continue;
+        }
 
         /* allocate memory for frame - use static buffer if possible */
         if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer)
