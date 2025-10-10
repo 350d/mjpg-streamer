@@ -50,6 +50,10 @@ static inline void reset_getopt(void)
 
 void daemon_mode(void);
 
+/* SIMD-optimized memory operations */
+void detect_simd_capabilities(void);
+void* simd_memcpy(void* dest, const void* src, size_t n);
+
 /******************************************************************************
  Getopt utility macros
  

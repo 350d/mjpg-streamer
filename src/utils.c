@@ -38,6 +38,25 @@
 #endif
 #include <sys/stat.h>
 
+/* SIMD optimization headers */
+#ifdef __SSE2__
+#include <emmintrin.h>
+#define HAVE_SSE2 1
+#else
+#define HAVE_SSE2 0
+#endif
+
+#ifdef __ARM_NEON
+#include <arm_neon.h>
+#ifndef HAVE_NEON
+#define HAVE_NEON 1
+#endif
+#else
+#ifndef HAVE_NEON
+#define HAVE_NEON 0
+#endif
+#endif
+
 #include "utils.h"
 
 /******************************************************************************
@@ -148,4 +167,95 @@ void resolutions_help(const char * padding) {
     }
     fprintf(stderr, "\n%sor a custom value like the following" \
     "\n%sexample: 640x480\n", padding, padding);
+}
+
+/******************************************************************************
+ * SIMD-optimized memory copy functions
+ * Universal implementation for all plugins
+ ******************************************************************************/
+
+/* SIMD capability detection */
+static int simd_available = 0;
+static int simd_type = 0; /* 0=none, 1=SSE2, 2=NEON */
+
+void detect_simd_capabilities(void) {
+    simd_available = 0;
+    simd_type = 0;
+    
+#if HAVE_SSE2
+    /* Check for SSE2 support */
+    simd_available = 1;
+    simd_type = 1;
+#elif HAVE_NEON
+    /* Check for NEON support */
+    simd_available = 1;
+    simd_type = 2;
+#endif
+}
+
+/* Hybrid SIMD-optimized memory copy
+ * Strategy:
+ * - Small blocks (<64 bytes): Use __builtin_memcpy (compiler optimizations)
+ * - Large blocks (>=64 bytes): Use SIMD instructions if available
+ * - Fallback: Use __builtin_memcpy for unsupported architectures
+ */
+void* simd_memcpy(void* dest, const void* src, size_t n) {
+    /* For small blocks, use compiler-optimized memcpy */
+    if (n < 64) {
+        return __builtin_memcpy(dest, src, n);
+    }
+    
+    /* For large blocks, use SIMD if available */
+    if (!simd_available) {
+        return __builtin_memcpy(dest, src, n);
+    }
+    
+#if HAVE_SSE2
+    if (simd_type == 1) {
+        /* SSE2 optimized copy */
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        /* Copy 16-byte chunks using SSE2 */
+        while (n >= 16) {
+            __m128i data = _mm_loadu_si128((__m128i*)s);
+            _mm_storeu_si128((__m128i*)d, data);
+            d += 16;
+            s += 16;
+            n -= 16;
+        }
+        
+        /* Handle remaining bytes */
+        if (n > 0) {
+            memcpy(d, s, n);
+        }
+        return dest;
+    }
+#endif
+
+#if HAVE_NEON
+    if (simd_type == 2) {
+        /* NEON optimized copy */
+        char* d = (char*)dest;
+        const char* s = (const char*)src;
+        
+        /* Copy 16-byte chunks using NEON */
+        while (n >= 16) {
+            uint8x16_t data = vld1q_u8((uint8_t*)s);
+            vst1q_u8((uint8_t*)d, data);
+            d += 16;
+            s += 16;
+            n -= 16;
+        }
+        
+        /* Handle remaining bytes */
+        if (n > 0) {
+            memcpy(d, s, n);
+        }
+        return dest;
+    }
+#endif
+
+    /* Fallback to builtin memcpy */
+    return __builtin_memcpy(dest, src, n);
 }
