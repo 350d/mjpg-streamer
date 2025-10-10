@@ -34,6 +34,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <strings.h>  /* for strcasecmp */
+#include <sys/select.h>  /* for select */
 
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
@@ -296,7 +297,27 @@ void *worker_thread(void *arg)
     while(!pglobal->stop) {
         if (mode == NewFilesOnly) {
 #ifdef __linux__
-            /* wait for new frame, read will block until something happens */
+            /* Check if we should stop before blocking read */
+            if(pglobal->stop) break;
+            
+            /* Use select to avoid blocking indefinitely */
+            fd_set readfds;
+            struct timeval timeout;
+            FD_ZERO(&readfds);
+            FD_SET(fd, &readfds);
+            timeout.tv_sec = 1;  /* 1 second timeout */
+            timeout.tv_usec = 0;
+            
+            int select_result = select(fd + 1, &readfds, NULL, NULL, &timeout);
+            if(select_result == -1) {
+                perror("select failed");
+                break;
+            } else if(select_result == 0) {
+                /* Timeout - check stop condition and continue */
+                continue;
+            }
+            
+            /* Data available, read inotify event */
             rc = read(fd, ev, size);
             if(rc == -1) {
                 perror("reading inotify events failed\n");
