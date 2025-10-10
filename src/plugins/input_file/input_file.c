@@ -27,20 +27,33 @@
 #include <pthread.h>
 #include <syslog.h>
 #include <sys/types.h>
+#ifdef __linux__
 #include <sys/inotify.h>
+#endif
 #include <dirent.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <strings.h>  /* for strcasecmp */
 
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
 
 #define INPUT_PLUGIN_NAME "FILE input plugin"
+#define MAX_FILE_SIZE (10*1024*1024)  /* 10MB max file size */
 
 typedef enum _read_mode {
     NewFilesOnly,
     ExistingFiles
 } read_mode;
+
+/* Buffered I/O structure */
+typedef struct {
+    char buffer[8192];  /* 8KB read buffer */
+    size_t buffer_pos;
+    size_t buffer_size;
+    int fd;
+    int eof;
+} file_read_buffer;
 
 /* private functions and variables to this plugin */
 static pthread_t   worker;
@@ -49,6 +62,11 @@ static globals     *pglobal;
 void *worker_thread(void *);
 void worker_cleanup(void *);
 void help(void);
+
+/* Buffered I/O functions */
+static void init_file_read_buffer(file_read_buffer *buf, int fd);
+static ssize_t buffered_read(file_read_buffer *buf, void *data, size_t size);
+static void close_file_read_buffer(file_read_buffer *buf);
 
 static double delay = 1.0;
 static char *folder = NULL;
@@ -60,6 +78,10 @@ static read_mode mode = NewFilesOnly;
 /* global variables for this plugin */
 static int fd, rc, wd, size;
 static struct inotify_event *ev;
+
+/* Static buffer for file data to avoid malloc/free in hot path */
+static unsigned char static_file_buffer[MAX_FILE_SIZE];
+static int use_static_buffers = 1;
 
 /*** plugin interface functions ***/
 int input_init(input_parameter *param, int id)
@@ -189,6 +211,7 @@ int input_run(int id)
     pglobal->in[id].buf = NULL;
 
     if (mode == NewFilesOnly) {
+#ifdef __linux__
         rc = fd = inotify_init();
         if(rc == -1) {
             perror("could not initilialize inotify");
@@ -207,6 +230,10 @@ int input_run(int id)
             perror("not enough memory");
             return 1;
         }
+#else
+        IPRINT("inotify not available on this platform, using ExistingFiles mode\n");
+        mode = ExistingFiles;
+#endif
     }
 
     if(pthread_create(&worker, 0, worker_thread, NULL) != 0) {
@@ -247,6 +274,13 @@ void *worker_thread(void *arg)
     int currentFileNumber = 0;
     char hasJpgFile = 0;
     struct timeval timestamp;
+    
+    /* Initialize SIMD capabilities */
+    static int simd_initialized = 0;
+    if (!simd_initialized) {
+        detect_simd_capabilities();
+        simd_initialized = 1;
+    }
 
     if (mode == ExistingFiles) {
         fileCount = scandir(folder, &fileList, 0, alphasort);
@@ -261,6 +295,7 @@ void *worker_thread(void *arg)
 
     while(!pglobal->stop) {
         if (mode == NewFilesOnly) {
+#ifdef __linux__
             /* wait for new frame, read will block until something happens */
             rc = read(fd, ev, size);
             if(rc == -1) {
@@ -288,9 +323,25 @@ void *worker_thread(void *arg)
                 continue;
             }
             DBG("new file detected: %s\n", buffer);
+#else
+            /* Fallback for non-Linux systems */
+            usleep(100000); /* 100ms delay */
+            continue;
+#endif
         } else {
-            if ((strstr(fileList[currentFileNumber]->d_name, ".jpg") != NULL) ||
-                (strstr(fileList[currentFileNumber]->d_name, ".JPG") != NULL)) {
+            /* Optimized file extension check */
+            const char *filename = fileList[currentFileNumber]->d_name;
+            const char *ext = strrchr(filename, '.');
+            int is_jpg = 0;
+            
+            if (ext != NULL) {
+                /* Check for .jpg or .JPG extension (case insensitive) */
+                if ((strcasecmp(ext, ".jpg") == 0) || (strcasecmp(ext, ".jpeg") == 0)) {
+                    is_jpg = 1;
+                }
+            }
+            
+            if (is_jpg) {
                 hasJpgFile = 1;
                 DBG("serving file: %s\n", fileList[currentFileNumber]->d_name);
                 snprintf(buffer, sizeof(buffer), "%s%s", folder, fileList[currentFileNumber]->d_name);
@@ -332,24 +383,42 @@ void *worker_thread(void *arg)
         /* copy frame from file to global buffer */
         pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
-        /* allocate memory for frame */
+        /* allocate memory for frame - use static buffer if possible */
         if(pglobal->in[plugin_number].buf != NULL)
             free(pglobal->in[plugin_number].buf);
 
-        pglobal->in[plugin_number].buf = malloc(filesize + (1 << 16));
-
-        if(pglobal->in[plugin_number].buf == NULL) {
-            fprintf(stderr, "could not allocate memory\n");
-            break;
+        if (use_static_buffers && filesize <= MAX_FILE_SIZE) {
+            /* Use static buffer for files up to MAX_FILE_SIZE */
+            pglobal->in[plugin_number].buf = static_file_buffer;
+        } else {
+            /* Fallback to dynamic allocation for larger files */
+            pglobal->in[plugin_number].buf = malloc(filesize + (1 << 16));
+            if(pglobal->in[plugin_number].buf == NULL) {
+                fprintf(stderr, "could not allocate memory\n");
+                pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+                close(file);
+                break;
+            }
         }
 
-        if((pglobal->in[plugin_number].size = read(file, pglobal->in[plugin_number].buf, filesize)) == -1) {
+        /* Use buffered read for better performance */
+        file_read_buffer read_buf;
+        init_file_read_buffer(&read_buf, file);
+        
+        ssize_t bytes_read = buffered_read(&read_buf, pglobal->in[plugin_number].buf, filesize);
+        if(bytes_read == -1) {
             perror("could not read from file");
-            free(pglobal->in[plugin_number].buf); pglobal->in[plugin_number].buf = NULL; pglobal->in[plugin_number].size = 0;
+            if (pglobal->in[plugin_number].buf != static_file_buffer) {
+                free(pglobal->in[plugin_number].buf);
+            }
+            pglobal->in[plugin_number].buf = NULL; 
+            pglobal->in[plugin_number].size = 0;
             pthread_mutex_unlock(&pglobal->in[plugin_number].db);
             close(file);
             break;
         }
+        
+        pglobal->in[plugin_number].size = bytes_read;
 
         gettimeofday(&timestamp, NULL);
         pglobal->in[plugin_number].timestamp = timestamp;
@@ -402,6 +471,7 @@ void worker_cleanup(void *arg)
     free(ev);
 
     if (mode == NewFilesOnly) {
+#ifdef __linux__
         rc = inotify_rm_watch(fd, wd);
         if(rc == -1) {
             perror("could not close watch descriptor");
@@ -411,10 +481,57 @@ void worker_cleanup(void *arg)
         if(rc == -1) {
             perror("could not close filedescriptor");
         }
+#endif
     }
 }
 
+/* Buffered I/O implementation */
+static void init_file_read_buffer(file_read_buffer *buf, int fd)
+{
+    buf->fd = fd;
+    buf->buffer_pos = 0;
+    buf->buffer_size = 0;
+    buf->eof = 0;
+}
 
+static ssize_t buffered_read(file_read_buffer *buf, void *data, size_t size)
+{
+    size_t total_read = 0;
+    size_t remaining = size;
+    char *dest = (char *)data;
+    
+    while (remaining > 0 && !buf->eof) {
+        /* Refill buffer if needed */
+        if (buf->buffer_pos >= buf->buffer_size) {
+            ssize_t bytes_read = read(buf->fd, buf->buffer, sizeof(buf->buffer));
+            if (bytes_read <= 0) {
+                buf->eof = 1;
+                break;
+            }
+            buf->buffer_size = bytes_read;
+            buf->buffer_pos = 0;
+        }
+        
+        /* Copy from buffer to destination */
+        size_t available = buf->buffer_size - buf->buffer_pos;
+        size_t to_copy = (remaining < available) ? remaining : available;
+        
+        simd_memcpy(dest + total_read, buf->buffer + buf->buffer_pos, to_copy);
+        
+        total_read += to_copy;
+        remaining -= to_copy;
+        buf->buffer_pos += to_copy;
+    }
+    
+    return total_read;
+}
+
+static void close_file_read_buffer(file_read_buffer *buf)
+{
+    /* Nothing to do for buffered read */
+    buf->fd = -1;
+    buf->eof = 1;
+}
 
 
 
