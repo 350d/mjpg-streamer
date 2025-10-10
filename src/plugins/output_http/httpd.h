@@ -49,6 +49,14 @@
     "Pragma: no-cache\r\n" \
     "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
 
+/* Keep-Alive header for persistent connections */
+#define KEEP_ALIVE_HEADER "Connection: keep-alive\r\n" \
+    "Keep-Alive: timeout=5, max=100\r\n" \
+    "Server: MJPG-Streamer/0.2\r\n" \
+    "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n" \
+    "Pragma: no-cache\r\n" \
+    "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+
 /*
  * Maximum number of server sockets (i.e. protocol families) to listen.
  */

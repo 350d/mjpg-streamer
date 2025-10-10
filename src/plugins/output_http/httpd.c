@@ -111,6 +111,13 @@ static int flush_write_buffer(write_buffer *wb) {
     return result;
 }
 
+/* HTTP Keep-Alive support functions */
+static int should_use_keep_alive(int fd) {
+    /* For now, use Keep-Alive for all connections */
+    /* In future, could check client capabilities or configuration */
+    return 1;
+}
+
 static globals *pglobal;
 extern context servers[MAX_OUTPUT_PLUGINS];
 int piggy_fine = 2; // FIXME make it command line parameter
@@ -584,12 +591,16 @@ void send_stream(cfd *context_fd, int input_number)
     struct timeval timestamp;
 
     DBG("preparing header\n");
+    /* Use Keep-Alive if supported */
+    const char *header_template = should_use_keep_alive(context_fd->fd) ? 
+        KEEP_ALIVE_HEADER : STD_HEADER;
+    
     sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
             "Access-Control-Allow-Origin: *\r\n" \
-            STD_HEADER \
+            "%s" \
             "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n" \
             "\r\n" \
-            "--" BOUNDARY "\r\n");
+            "--" BOUNDARY "\r\n", header_template);
 
     if(write(context_fd->fd, buffer, strlen(buffer)) < 0) {
         free(frame);
