@@ -563,8 +563,8 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     unsigned char *enhanced_data = NULL;
     int enhanced_size = 0;
     
-    /* Sanity check: print TurboJPEG version */
-    printf("TurboJPEG version: %s\n", tjGetVersionStr());
+    /* Sanity check: TurboJPEG is available */
+    printf("Using TurboJPEG library\n");
     
     /* Sanity check: validate arguments */
     if (!jpeg_data || jpeg_size <= 0 || !width || !height) {
