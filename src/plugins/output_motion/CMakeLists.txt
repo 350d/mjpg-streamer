@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Motion detection output plugin
-add_library(output_motion SHARED output_motion.c)
+add_library(output_motion SHARED 
+    output_motion.c
+    ../input_uvc/jpeg_utils.c
+)
 
 target_include_directories(output_motion PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../..

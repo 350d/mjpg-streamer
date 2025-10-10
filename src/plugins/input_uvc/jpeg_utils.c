@@ -279,3 +279,233 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
 
     return (written);
 }
+
+/******************************************************************************
+Description.: Get JPEG dimensions from JPEG data
+Input Value.: JPEG data, size, output pointers for width, height
+Return Value: 0 if ok, -1 on error
+******************************************************************************/
+int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
+{
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    
+    /* Initialize the JPEG decompression object */
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+    
+    /* Set input source */
+    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
+    
+    /* Read header */
+    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+    
+    /* Get dimensions from header */
+    *width = cinfo.image_width;
+    *height = cinfo.image_height;
+    
+    /* Cleanup */
+    jpeg_destroy_decompress(&cinfo);
+    
+    return 0;
+}
+
+/******************************************************************************
+Description.: Validate JPEG data integrity
+Input Value.: JPEG data, size
+Return Value: 0 if valid, -1 if invalid
+******************************************************************************/
+int jpeg_validate_data(unsigned char *jpeg_data, int jpeg_size)
+{
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    
+    /* Check for valid JPEG data */
+    if(jpeg_size < 4) {
+        return -1;
+    }
+    
+    /* Check for JPEG magic bytes */
+    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        return -1;
+    }
+    
+    /* Check for JPEG end marker */
+    if(jpeg_size < 2 || jpeg_data[jpeg_size-2] != 0xFF || jpeg_data[jpeg_size-1] != 0xD9) {
+        return -1;
+    }
+
+    /* Initialize the JPEG decompression object */
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+
+    /* Set input source */
+    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
+
+    /* Try to read header */
+    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    /* Try to start decompression */
+    if(!jpeg_start_decompress(&cinfo)) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+    
+    /* Clean up */
+    jpeg_destroy_decompress(&cinfo);
+    return 0;
+}
+
+/******************************************************************************
+Description.: Decode JPEG to grayscale using libjpeg with integrated scaling
+Input Value.: JPEG data, size, scale factor, output pointers for gray data, width, height
+Return Value: 0 if ok, -1 on error
+******************************************************************************/
+int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scale_factor,
+                               unsigned char **gray_data, int *width, int *height)
+{
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    JSAMPROW row_pointer[1];
+    unsigned char *output_data = NULL;
+    int row_stride;
+
+    /* Check for valid JPEG data */
+    if(jpeg_size < 4) {
+        return -1;
+    }
+    
+    /* Check for JPEG magic bytes */
+    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        return -1;
+    }
+
+    /* Initialize the JPEG decompression object */
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+
+    /* Set input source */
+    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
+
+    /* Read header */
+    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    /* Force grayscale output */
+    cinfo.out_color_space = JCS_GRAYSCALE;
+    cinfo.output_components = 1;
+
+    /* Set scaling for faster processing */
+    cinfo.scale_num = 1;
+    cinfo.scale_denom = scale_factor;
+
+    /* Start decompression */
+    if(!jpeg_start_decompress(&cinfo)) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    *width = cinfo.output_width;
+    *height = cinfo.output_height;
+    row_stride = cinfo.output_width * cinfo.output_components;
+
+    /* Allocate output buffer for scaled image */
+    output_data = (unsigned char*)malloc(cinfo.output_height * row_stride);
+    if(!output_data) {
+        jpeg_finish_decompress(&cinfo);
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    /* Read scanlines with integrated scaling */
+    while(cinfo.output_scanline < cinfo.output_height) {
+        row_pointer[0] = &output_data[cinfo.output_scanline * row_stride];
+        jpeg_read_scanlines(&cinfo, row_pointer, 1);
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+
+    *gray_data = output_data;
+    return 0;
+}
+
+/******************************************************************************
+Description.: Decompress JPEG to RGB using libjpeg
+Input Value.: JPEG data, size, output pointers for RGB data, width, height
+Return Value: 0 if ok, -1 on error
+******************************************************************************/
+int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size, 
+                           unsigned char **rgb_data, int *width, int *height)
+{
+    struct jpeg_decompress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    JSAMPROW row_pointer[1];
+    unsigned char *output_data = NULL;
+    int row_stride;
+
+    /* Check for valid JPEG data */
+    if(jpeg_size < 4) {
+        return -1;
+    }
+    
+    /* Check for JPEG magic bytes */
+    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        return -1;
+    }
+
+    /* Initialize the JPEG decompression object */
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_decompress(&cinfo);
+
+    /* Set input source */
+    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
+
+    /* Read header */
+    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    /* Force RGB output */
+    cinfo.out_color_space = JCS_RGB;
+    cinfo.output_components = 3;
+
+    /* Start decompression */
+    if(!jpeg_start_decompress(&cinfo)) {
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    *width = cinfo.output_width;
+    *height = cinfo.output_height;
+    row_stride = cinfo.output_width * cinfo.output_components;
+
+    /* Allocate output buffer */
+    output_data = (unsigned char*)malloc(cinfo.output_height * row_stride);
+    if(!output_data) {
+        jpeg_finish_decompress(&cinfo);
+        jpeg_destroy_decompress(&cinfo);
+        return -1;
+    }
+
+    /* Read scanlines */
+    while(cinfo.output_scanline < cinfo.output_height) {
+        row_pointer[0] = &output_data[cinfo.output_scanline * row_stride];
+        jpeg_read_scanlines(&cinfo, row_pointer, 1);
+    }
+
+    jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+
+    *rgb_data = output_data;
+    return 0;
+}

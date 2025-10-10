@@ -46,6 +46,9 @@
 #include <jerror.h>
 #endif
 
+/* Use centralized JPEG utilities */
+#include "../input_uvc/jpeg_utils.h"
+
 #ifdef __linux__
 #include <linux/types.h>
 #include <linux/videodev2.h>
@@ -111,46 +114,7 @@ static int prev_size_threshold = 0;  // cached threshold for optimization
 static int cached_abs_threshold = 0;  // cached absolute threshold for motion detection
 static int cached_early_exit_threshold = 0;  // cached early exit threshold
 
-#ifdef HAVE_JPEG
-/******************************************************************************
-Description.: Get JPEG dimensions from JPEG data
-Input Value.: JPEG data, size, output pointers for width, height
-Return Value: 0 if ok, -1 on error
-******************************************************************************/
-static int get_jpeg_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
-{
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    
-    /* Initialize the JPEG decompression object */
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_decompress(&cinfo);
-    
-    /* Set input source */
-    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
-    
-    /* Read header */
-    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-        jpeg_destroy_decompress(&cinfo);
-        return -1;
-    }
-    
-    /* Get dimensions from header */
-    *width = cinfo.image_width;
-    *height = cinfo.image_height;
-    
-    /* Cleanup */
-    jpeg_destroy_decompress(&cinfo);
-    
-    return 0;
-}
-#else
-static int get_jpeg_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
-{
-    /* JPEG support not available - return error */
-    return -1;
-}
-#endif
+/* JPEG functions now provided by jpeg_utils.h */
 
 /******************************************************************************
 Description.: Check if JPEG size changed significantly
@@ -289,143 +253,9 @@ void convert_to_grayscale_scale(unsigned char *src, unsigned char *dst,
         min_val, max_val, avg_val, max_val - min_val);
 }
 
-/******************************************************************************
-Description.: Validate JPEG data integrity
-Input Value.: JPEG data, size
-Return Value: 0 if valid, -1 if invalid
-******************************************************************************/
-int validate_jpeg_data(unsigned char *jpeg_data, int jpeg_size)
-{
-#ifdef HAVE_JPEG
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    
-    /* Check for valid JPEG data */
-    if(jpeg_size < 4) {
-        return -1;
-    }
-    
-    /* Check for JPEG magic bytes */
-    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
-        return -1;
-    }
-    
-    /* Check for JPEG end marker */
-    if(jpeg_size < 2 || jpeg_data[jpeg_size-2] != 0xFF || jpeg_data[jpeg_size-1] != 0xD9) {
-        return -1;
-    }
+/* validate_jpeg_data now provided by jpeg_utils.h */
 
-    /* Initialize the JPEG decompression object */
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_decompress(&cinfo);
-
-    /* Set input source */
-    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
-
-    /* Try to read header */
-    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-        jpeg_destroy_decompress(&cinfo);
-        return -1;
-    }
-
-    /* Try to start decompression */
-    if(!jpeg_start_decompress(&cinfo)) {
-        jpeg_destroy_decompress(&cinfo);
-        return -1;
-    }
-    
-    /* Clean up */
-    jpeg_destroy_decompress(&cinfo);
-    return 0;
-#else
-    return -1;
-#endif
-}
-
-/******************************************************************************
-Description.: Decode JPEG to grayscale using libjpeg with integrated scaling
-Input Value.: JPEG data, size, scale factor, output pointers for gray data, width, height
-Return Value: 0 if ok, -1 on error
-******************************************************************************/
-int decode_jpeg_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scale_factor,
-                              unsigned char **gray_data, int *width, int *height)
-{
-#ifdef HAVE_JPEG
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    JSAMPROW row_pointer[1];
-    unsigned char *output_data = NULL;
-    int row_stride;
-
-    /* Check for valid JPEG data */
-    if(jpeg_size < 4) {
-        DBG("JPEG data too small: %d bytes\n", jpeg_size);
-        return -1;
-    }
-    
-    /* Check for JPEG magic bytes */
-    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
-        DBG("Invalid JPEG magic bytes: %02X %02X\n", jpeg_data[0], jpeg_data[1]);
-        return -1;
-    }
-
-    /* Initialize the JPEG decompression object */
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_decompress(&cinfo);
-
-    /* Set input source */
-    jpeg_mem_src(&cinfo, jpeg_data, jpeg_size);
-
-    /* Read header */
-    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-        DBG("Failed to read JPEG header, size: %d bytes\n", jpeg_size);
-        jpeg_destroy_decompress(&cinfo);
-        return -1;
-    }
-
-    /* Force grayscale output */
-    cinfo.out_color_space = JCS_GRAYSCALE;
-    cinfo.output_components = 1;
-
-    /* Set scaling for faster processing */
-    cinfo.scale_num = 1;
-    cinfo.scale_denom = scale_factor;
-
-    /* Start decompression */
-    if(!jpeg_start_decompress(&cinfo)) {
-        DBG("Failed to start JPEG decompression\n");
-        jpeg_destroy_decompress(&cinfo);
-        return -1;
-    }
-
-    *width = cinfo.output_width;
-    *height = cinfo.output_height;
-    row_stride = cinfo.output_width * cinfo.output_components;
-
-    /* Allocate output buffer for scaled image */
-    output_data = (unsigned char*)malloc(cinfo.output_height * row_stride);
-    if(!output_data) {
-        jpeg_finish_decompress(&cinfo);
-        jpeg_destroy_decompress(&cinfo);
-        return -1;
-    }
-
-    /* Read scanlines with integrated scaling */
-    while(cinfo.output_scanline < cinfo.output_height) {
-        row_pointer[0] = &output_data[cinfo.output_scanline * row_stride];
-        jpeg_read_scanlines(&cinfo, row_pointer, 1);
-    }
-
-    /* Finish decompression */
-    jpeg_finish_decompress(&cinfo);
-    jpeg_destroy_decompress(&cinfo);
-
-    *gray_data = output_data;
-    return 0;
-#else
-    return -1; // JPEG not available
-#endif
-}
+/* decode_jpeg_to_gray_scaled now provided by jpeg_utils.h */
 
 /******************************************************************************
 Description.: Convert MJPEG to grayscale and scale down
@@ -826,7 +656,7 @@ void *worker_thread(void *arg)
         if(scaled_frame == NULL) {
             // Get actual width and height from JPEG header (like QR plugin does)
             int width, height;
-            if(get_jpeg_dimensions(pglobal->in[input_number].buf, pglobal->in[input_number].size, &width, &height) < 0) {
+            if(jpeg_get_dimensions(pglobal->in[input_number].buf, pglobal->in[input_number].size, &width, &height) < 0) {
                 LOG("failed to get JPEG dimensions\n");
                 continue;
             }
@@ -841,7 +671,7 @@ void *worker_thread(void *arg)
         }
 
         /* Validate JPEG data before analysis */
-        if(validate_jpeg_data(current_frame, frame_size) < 0) {
+        if(jpeg_validate_data(current_frame, frame_size) < 0) {
             DBG("skipping corrupted JPEG frame for motion analysis, frame_size: %d\n", frame_size);
             continue;
         }
@@ -851,7 +681,7 @@ void *worker_thread(void *arg)
         unsigned char *gray_data = NULL;
         int width, height;
         
-        if(decode_jpeg_to_gray_scaled(current_frame, frame_size, scale_factor, &gray_data, &width, &height) < 0) {
+        if(jpeg_decode_to_gray_scaled(current_frame, frame_size, scale_factor, &gray_data, &width, &height) < 0) {
             DBG("failed to decode JPEG for motion detection, frame_size: %d\n", frame_size);
             continue;
         }
