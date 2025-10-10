@@ -106,10 +106,13 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
                                unsigned char **enhanced_data, int *enhanced_size) {
     if (has_huffman_tables(jpeg_data, jpeg_size)) {
         /* Already has Huffman tables, no need to enhance */
+        printf("JPEG already has Huffman tables, no enhancement needed\n");
         *enhanced_data = (unsigned char*)jpeg_data;
         *enhanced_size = jpeg_size;
         return 0;
     }
+    
+    printf("JPEG missing Huffman tables, creating enhanced version\n");
     
     /* Find position after SOI marker (0xFF 0xD8) */
     int soi_pos = -1;
@@ -523,7 +526,10 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     
     /* Try with enhanced data (with Huffman tables) */
     if (create_enhanced_jpeg(jpeg_data, jpeg_size, &enhanced_data, &enhanced_size) == 0) {
+        printf("Enhanced JPEG created: original_size=%d, enhanced_size=%d\n", jpeg_size, enhanced_size);
+        printf("Enhanced JPEG header: %02X %02X %02X %02X\n", enhanced_data[0], enhanced_data[1], enhanced_data[2], enhanced_data[3]);
         result = tjDecompressHeader3(handle, enhanced_data, enhanced_size, width, height, NULL, NULL);
+        printf("TurboJPEG enhanced result: %d\n", result);
         if (enhanced_data != jpeg_data) {
             free(enhanced_data);
         }
