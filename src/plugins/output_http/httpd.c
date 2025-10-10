@@ -243,12 +243,17 @@ int init_header_cache(header_cache *cache) {
         "Pragma: no-cache\r\n"
         "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
         "Content-type: image/jpeg\r\n"
-        "X-Timestamp: %d.%06d\r\n"
-        "\r\n",
-        0, 0); /* Placeholder for timestamp */
+        "X-Timestamp: 0000000000.000000\r\n"
+        "\r\n");
     
     cache->snapshot_200.len = strlen(cache->snapshot_200.data);
-    cache->snapshot_200.timestamp_pos = cache->snapshot_200.len - 15; /* Position of timestamp */
+    /* Find the position of timestamp in the template */
+    char *timestamp_start = strstr(cache->snapshot_200.data, "X-Timestamp: ");
+    if (timestamp_start) {
+        cache->snapshot_200.timestamp_pos = timestamp_start - cache->snapshot_200.data + 13; /* After "X-Timestamp: " */
+    } else {
+        cache->snapshot_200.timestamp_pos = -1; /* Not found */
+    }
     cache->snapshot_200.content_length_pos = -1;
     
     /* Initialize stream header */
@@ -312,18 +317,25 @@ void cleanup_header_cache(header_cache *cache) {
 /* Fast header generation using cache */
 static int write_cached_header(int fd, cached_header *header, struct timeval *timestamp) {
     if (header->timestamp_pos != -1 && timestamp) {
-        /* Update timestamp in cached header */
+        /* Create a copy of the header and update timestamp */
+        char *header_copy = malloc(header->len + 1);
+        if (!header_copy) return -1;
+        
+        memcpy(header_copy, header->data, header->len);
+        header_copy[header->len] = '\0';
+        
+        /* Update timestamp in the copy */
         char timestamp_str[32];
         snprintf(timestamp_str, sizeof(timestamp_str), "%d.%06d", 
                 (int)timestamp->tv_sec, (int)timestamp->tv_usec);
         
-        /* Write header up to timestamp position */
-        if (write(fd, header->data, header->timestamp_pos) < 0) return -1;
-        /* Write timestamp */
-        if (write(fd, timestamp_str, strlen(timestamp_str)) < 0) return -1;
-        /* Write rest of header */
-        if (write(fd, header->data + header->timestamp_pos + 15, 
-                 header->len - header->timestamp_pos - 15) < 0) return -1;
+        /* Replace the placeholder timestamp */
+        memcpy(header_copy + header->timestamp_pos, timestamp_str, strlen(timestamp_str));
+        
+        /* Write the complete header */
+        int result = write(fd, header_copy, header->len);
+        free(header_copy);
+        return (result < 0) ? -1 : 0;
     } else {
         /* Write header as-is */
         if (write(fd, header->data, header->len) < 0) return -1;
