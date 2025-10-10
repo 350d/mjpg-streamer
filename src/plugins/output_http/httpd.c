@@ -390,6 +390,9 @@ client_info *add_client(char *address)
         if (current_time - client_infos.infos[i-1]->last_take_time.tv_sec > 300) { // 5 minutes timeout
             free(client_infos.infos[i-1]->address);
             free(client_infos.infos[i-1]);
+            // Move remaining clients down to fill the gap
+            memmove(&client_infos.infos[i-1], &client_infos.infos[i], 
+                   (client_infos.client_count - i) * sizeof(client_info*));
             client_infos.client_count--;
         }
     }
@@ -429,13 +432,14 @@ client_info *add_client(char *address)
     strcpy(current_client_info->address, address);
     memset(&(current_client_info->last_take_time), 0, sizeof(struct timeval)); // set last time to zero
 
-    client_infos.infos = realloc(client_infos.infos, (client_infos.client_count + 1) * sizeof(client_info*));
-    if (client_infos.infos == NULL) {
+    client_info **new_infos = realloc(client_infos.infos, (client_infos.client_count + 1) * sizeof(client_info*));
+    if (new_infos == NULL) {
         free(current_client_info->address);
         free(current_client_info);
         pthread_mutex_unlock(&client_infos.mutex);
         return NULL;
     }
+    client_infos.infos = new_infos;
     
     client_infos.infos[client_infos.client_count] = current_client_info;
     client_infos.client_count += 1;
@@ -483,6 +487,27 @@ void update_client_timestamp(client_info *client)
     pthread_mutex_lock(&client_infos.mutex);
     gettimeofday(&tim, NULL);
     memcpy(&client->last_take_time, &tim, sizeof(struct timeval));
+    pthread_mutex_unlock(&client_infos.mutex);
+}
+
+/* Remove client from client_infos when disconnected */
+void remove_client(client_info *client)
+{
+    unsigned int i;
+    pthread_mutex_lock(&client_infos.mutex);
+    
+    for (i = 0; i < client_infos.client_count; i++) {
+        if (client_infos.infos[i] == client) {
+            free(client->address);
+            free(client);
+            // Move remaining clients down to fill the gap
+            memmove(&client_infos.infos[i], &client_infos.infos[i+1], 
+                   (client_infos.client_count - i - 1) * sizeof(client_info*));
+            client_infos.client_count--;
+            break;
+        }
+    }
+    
     pthread_mutex_unlock(&client_infos.mutex);
 }
 #endif
@@ -1552,6 +1577,13 @@ void *client_thread(void *arg)
     }
 
     close(lcfd.fd);
+    
+    #if defined(MANAGMENT)
+    if (lcfd.client != NULL) {
+        remove_client(lcfd.client);
+    }
+    #endif
+    
     free_request(&req);
 
     DBG("leaving HTTP client thread\n");
@@ -1736,7 +1768,13 @@ void *server_thread(void *arg)
                     continue;
                 }
                 pthread_detach(client);
+                pcfd = NULL; /* Prevent double-free, pcfd now owned by client_thread */
             }
+        }
+        
+        /* Free pcfd if no connection was accepted */
+        if (pcfd != NULL) {
+            free(pcfd);
         }
     }
 
