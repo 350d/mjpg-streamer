@@ -315,7 +315,10 @@ void *worker_thread(void *arg)
 
     while(!pglobal->stop) {
         /* Check stop condition at the beginning of each iteration */
-        if(pglobal->stop) break;
+        if(pglobal->stop) {
+            DBG("stop condition detected in main loop\n");
+            break;
+        }
         
         if (mode == NewFilesOnly) {
 #ifdef __linux__
@@ -470,11 +473,15 @@ void *worker_thread(void *arg)
             }
         }
 
-        /* Use buffered read for better performance */
-        file_read_buffer read_buf;
-        init_file_read_buffer(&read_buf, file);
+        /* Check stop condition before read operation */
+        if(pglobal->stop) {
+            close(file);
+            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+            break;
+        }
         
-        ssize_t bytes_read = buffered_read(&read_buf, pglobal->in[plugin_number].buf, filesize);
+        /* Use direct read to avoid blocking in buffered_read */
+        ssize_t bytes_read = read(file, pglobal->in[plugin_number].buf, filesize);
         if(bytes_read == -1) {
             perror("could not read from file");
             if (pglobal->in[plugin_number].buf != static_file_buffer) {
@@ -511,7 +518,7 @@ void *worker_thread(void *arg)
         
         /* Add small delay in ExistingFiles mode to allow stop signal processing */
         if (mode == ExistingFiles) {
-            usleep(10000); /* 10ms delay - faster response to stop signal */
+            usleep(5000); /* 5ms delay - even faster response to stop signal */
         }
     }
 
