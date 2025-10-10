@@ -1936,16 +1936,31 @@ void *server_thread(void *arg)
         }
 
         DBG("waiting for clients to connect\n");
+        
+        /* Check for stop signal before waiting */
+        if(pglobal->stop) {
+            free(pcfd);
+            break;
+        }
 
 #ifdef __linux__
-        /* Use epoll for better performance */
+        /* Use epoll for better performance with timeout for signal handling */
         int nfds = epoll_wait(pcontext->async_io.epfd, pcontext->async_io.events, 
-                             pcontext->async_io.max_events, -1);
+                             pcontext->async_io.max_events, EPOLL_TIMEOUT_MS);
         
         if(nfds < 0) {
             if(errno == EINTR) continue;
             perror("epoll_wait");
             exit(EXIT_FAILURE);
+        }
+        
+        /* Check for stop signal if no events */
+        if(nfds == 0) {
+            if(pglobal->stop) {
+                DBG("stop signal received, exiting server thread\n");
+                break;
+            }
+            continue;
         }
         
         /* Process all ready events */
@@ -2017,6 +2032,12 @@ void *server_thread(void *arg)
         /* Free pcfd if no connection was accepted */
         if (pcfd != NULL) {
             free(pcfd);
+        }
+        
+        /* Check for stop signal after processing events */
+        if(pglobal->stop) {
+            DBG("stop signal received, exiting server thread\n");
+            break;
         }
     }
 
