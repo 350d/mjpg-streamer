@@ -36,7 +36,7 @@
 
 #ifdef HAVE_TURBOJPEG
     #include <turbojpeg.h>
-    #define JPEG_LIBRARY_TURBO 1
+    #define JPEG_LIBRARY_TURBO 0  /* Disabled - incompatible with MJPEG streams */
 #else
     #define JPEG_LIBRARY_TURBO 0
 #endif
@@ -544,42 +544,7 @@ Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
 {
-#if JPEG_LIBRARY_TURBO
-    /* TurboJPEG implementation with enhanced JPEG data */
-    tjhandle handle = NULL;
-    int result = -1;
-    unsigned char *enhanced_data = NULL;
-    int enhanced_size = 0;
-    
-    handle = tjInitDecompress();
-    if (!handle) {
-        return -1;
-    }
-    
-    /* Try with original data first */
-    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
-    if (result == 0) {
-        tjDestroy(handle);
-        return 0;  /* Success with original data */
-    }
-    
-    /* Try with enhanced data (with Huffman tables) */
-    if (create_enhanced_jpeg(jpeg_data, jpeg_size, &enhanced_data, &enhanced_size) == 0) {
-        printf("Enhanced JPEG created: original_size=%d, enhanced_size=%d\n", jpeg_size, enhanced_size);
-        printf("Enhanced JPEG header: %02X %02X %02X %02X\n", enhanced_data[0], enhanced_data[1], enhanced_data[2], enhanced_data[3]);
-        result = tjDecompressHeader3(handle, enhanced_data, enhanced_size, width, height, NULL, NULL);
-        printf("TurboJPEG enhanced result: %d\n", result);
-        if (enhanced_data != jpeg_data) {
-            free(enhanced_data);
-        }
-        tjDestroy(handle);
-        return (result == 0) ? 0 : -1;
-    }
-    
-    tjDestroy(handle);
-    return -1;
-#else
-    /* libjpeg implementation */
+    /* Use libjpeg implementation - TurboJPEG is incompatible with MJPEG streams */
 #ifdef __linux__
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
@@ -608,7 +573,6 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
 #else
     /* No JPEG support on non-Linux systems */
     return -1;
-#endif
 #endif
 }
 
