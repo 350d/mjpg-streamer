@@ -47,6 +47,7 @@
 
 #ifndef NO_LIBJPEG
     #include "../../jpeg_utils.h"
+    #include "input_uvc_jpeg.h"
     #include "huffman.h"
 #endif
 

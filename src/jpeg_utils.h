@@ -1,7 +1,4 @@
-/* JPEG compression function (existing) */
-int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int quality);
-
-/* JPEG decompression functions (new) */
+/* JPEG decompression functions */
 int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scale_factor,
                                unsigned char **gray_data, int *width, int *height);
 
