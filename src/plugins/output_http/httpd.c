@@ -795,9 +795,6 @@ void send_snapshot(cfd *context_fd, int input_number)
     #endif
 
     /* write the response using cached header for better performance */
-    DBG("send_snapshot: server_context=%p, headers.initialized=%d\n", 
-        server_context, server_context->headers.initialized);
-    
     if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
         if (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE) {
             if (frame != server_context->static_frame_buffer) free(frame);
