@@ -575,7 +575,7 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     
     handle = tjInitDecompress();
     if (!handle) {
-        printf("ERROR: tjInitDecompress() failed\n");
+        printf("ERROR: tjInitDecompress() failed: %s\n", tjGetErrorStr());
         return -1;
     }
     
@@ -584,6 +584,8 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     /* Try with original data first */
     printf("Calling tjDecompressHeader3 with original data: size=%d (unsigned long: %lu)\n", 
            jpeg_size, (unsigned long)jpeg_size);
+    printf("Buffer address: %p, width ptr: %p, height ptr: %p\n", jpeg_data, width, height);
+    
     result = tjDecompressHeader3(handle, jpeg_data, (unsigned long)jpeg_size, width, height, NULL, NULL);
     if (result == 0) {
         printf("TurboJPEG original success: %dx%d\n", *width, *height);
@@ -592,6 +594,18 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     }
     
     printf("TurboJPEG original failed: %s\n", tjGetErrorStr2(handle));
+    
+    /* Try fallback to tjDecompressHeader2 for older TurboJPEG versions */
+    printf("Trying fallback to tjDecompressHeader2...\n");
+    int subsamp, colorspace;
+    result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, width, height, &subsamp, &colorspace);
+    if (result == 0) {
+        printf("TurboJPEG fallback success: %dx%d, subsamp=%d, colorspace=%d\n", *width, *height, subsamp, colorspace);
+        tjDestroy(handle);
+        return 0;  /* Success with fallback */
+    }
+    
+    printf("TurboJPEG fallback also failed: %s\n", tjGetErrorStr2(handle));
     
     /* Try with enhanced data (with Huffman tables) */
     if (create_enhanced_jpeg(jpeg_data, jpeg_size, &enhanced_data, &enhanced_size) == 0) {
@@ -602,12 +616,21 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
                enhanced_data[enhanced_size-2], enhanced_data[enhanced_size-1]);
         printf("Calling tjDecompressHeader3 with enhanced data: size=%d (unsigned long: %lu)\n", 
                enhanced_size, (unsigned long)enhanced_size);
+        printf("Enhanced buffer address: %p\n", enhanced_data);
         result = tjDecompressHeader3(handle, enhanced_data, (unsigned long)enhanced_size, width, height, NULL, NULL);
         printf("TurboJPEG enhanced result: %d\n", result);
         if (result == 0) {
             printf("TurboJPEG enhanced success: %dx%d\n", *width, *height);
         } else {
             printf("TurboJPEG enhanced error: %s\n", tjGetErrorStr2(handle));
+            /* Try fallback for enhanced data too */
+            printf("Trying fallback tjDecompressHeader2 with enhanced data...\n");
+            result = tjDecompressHeader2(handle, enhanced_data, (unsigned long)enhanced_size, width, height, &subsamp, &colorspace);
+            if (result == 0) {
+                printf("TurboJPEG enhanced fallback success: %dx%d, subsamp=%d, colorspace=%d\n", *width, *height, subsamp, colorspace);
+            } else {
+                printf("TurboJPEG enhanced fallback also failed: %s\n", tjGetErrorStr2(handle));
+            }
         }
         if (enhanced_data != jpeg_data) {
             free(enhanced_data);
