@@ -209,8 +209,14 @@ int input_stop(int id)
         pglobal->stop = 1;
     }
     
-    /* Give thread a moment to see the stop flag */
-    usleep(10000); /* 10ms */
+    /* Give thread multiple chances to see the stop flag */
+    for(int i = 0; i < 10; i++) {
+        usleep(1000); /* 1ms */
+        if(pglobal && pglobal->stop) {
+            DBG("stop flag set, thread should exit\n");
+            break;
+        }
+    }
     
     /* Force cancel if still running */
     pthread_cancel(worker);
@@ -400,6 +406,8 @@ void *worker_thread(void *arg)
                         currentFileNumber = 0;
                     }
                 }
+                /* Check stop condition during file iteration */
+                if(pglobal->stop) break;
                 continue;
             }
         }
@@ -423,6 +431,12 @@ void *worker_thread(void *arg)
         }
 
         filesize = stats.st_size;
+
+        /* Check stop condition after file operations */
+        if(pglobal->stop) {
+            close(file);
+            break;
+        }
 
         /* copy frame from file to global buffer */
         /* Check stop condition before blocking mutex lock */
@@ -497,7 +511,7 @@ void *worker_thread(void *arg)
         
         /* Add small delay in ExistingFiles mode to allow stop signal processing */
         if (mode == ExistingFiles) {
-            usleep(50000); /* 50ms delay - more time for signal processing */
+            usleep(10000); /* 10ms delay - faster response to stop signal */
         }
     }
 
