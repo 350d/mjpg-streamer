@@ -33,7 +33,6 @@
 #include <getopt.h>
 #include <pthread.h>
 #include <syslog.h>
-#include <time.h>
 
 #ifdef __linux__
 #include <linux/types.h>          /* for videodev2.h */
@@ -244,19 +243,7 @@ int output_stop(int id)
 {
 
     DBG("will cancel server thread #%02d\n", id);
-    
-    /* Set stop flag first */
-    if(servers[id].pglobal) {
-        servers[id].pglobal->stop = 1;
-    }
-    
-    /* Give thread a moment to see the stop flag */
-    usleep(10000); /* 10ms */
-    
-    /* Force cancel if still running */
     pthread_cancel(servers[id].threadID);
-    
-    /* Note: pthread_join removed to avoid blocking on unresponsive threads */
     
     /* Clean up Stage 3 optimizations */
     cleanup_async_io(&servers[id].async_io);
@@ -276,7 +263,7 @@ int output_run(int id)
 
     /* create thread and pass context to thread function */
     pthread_create(&(servers[id].threadID), NULL, server_thread, &(servers[id]));
-    /* Keep thread joinable for proper cleanup */
+    pthread_detach(servers[id].threadID);
 
     return 0;
 }

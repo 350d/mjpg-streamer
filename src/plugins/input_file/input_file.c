@@ -34,7 +34,6 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <strings.h>  /* for strcasecmp */
-#include <sys/select.h>  /* for select */
 
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
@@ -87,8 +86,6 @@ static int use_static_buffers = 1;
 /*** plugin interface functions ***/
 int input_init(input_parameter *param, int id)
 {
-    printf("input_file: input_init called for id=%d\n", id);
-    
     int i;
     plugin_number = id;
 
@@ -204,42 +201,13 @@ int input_init(input_parameter *param, int id)
 
 int input_stop(int id)
 {
-    printf("input_file: input_stop called for id=%d\n", id);
-    printf("input_file: will cancel input thread\n");
-    
-    /* Set stop flag first */
-    if(pglobal) {
-        pglobal->stop = 1;
-        printf("input_file: stop flag set to 1\n");
-    } else {
-        printf("input_file: pglobal is NULL!\n");
-    }
-    
-    /* Give thread multiple chances to see the stop flag */
-    for(int i = 0; i < 10; i++) {
-        usleep(1000); /* 1ms */
-        if(pglobal && pglobal->stop) {
-            printf("input_file: stop flag confirmed, thread should exit\n");
-            break;
-        }
-        printf("input_file: waiting for stop flag, attempt %d\n", i+1);
-    }
-    
-    /* Force cancel if still running */
-    printf("input_file: calling pthread_cancel\n");
+    DBG("will cancel input thread\n");
     pthread_cancel(worker);
-    printf("input_file: pthread_cancel completed\n");
-    
-    /* Note: pthread_join removed to avoid blocking on unresponsive threads */
-    
-    printf("input_file: input_stop completed\n");
-    
     return 0;
 }
 
 int input_run(int id)
 {
-    printf("input_file: input_run called for id=%d\n", id);
     pglobal->in[id].buf = NULL;
 
     if (mode == NewFilesOnly) {
@@ -268,15 +236,13 @@ int input_run(int id)
 #endif
     }
 
-    printf("input_file: creating worker thread\n");
     if(pthread_create(&worker, 0, worker_thread, NULL) != 0) {
         free(pglobal->in[id].buf);
         fprintf(stderr, "could not start worker thread\n");
         exit(EXIT_FAILURE);
     }
-    printf("input_file: worker thread created successfully\n");
 
-    /* Keep thread joinable for proper cleanup */
+    pthread_detach(worker);
 
     return 0;
 }
@@ -299,8 +265,6 @@ void help(void)
 /* the single writer thread */
 void *worker_thread(void *arg)
 {
-    printf("input_file: worker_thread started!\n");
-    
     char buffer[1<<16];
     int file;
     size_t filesize = 0;
@@ -330,43 +294,9 @@ void *worker_thread(void *arg)
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop) {
-        printf("input_file: main loop iteration, stop=%d\n", pglobal->stop);
-        /* Check stop condition at the beginning of each iteration */
-        if(pglobal->stop) {
-            printf("input_file: stop condition detected in main loop\n");
-            break;
-        }
-        
-        printf("input_file: starting new iteration, mode=%d\n", mode);
-        
         if (mode == NewFilesOnly) {
 #ifdef __linux__
-            /* Check if we should stop before blocking read */
-            if(pglobal->stop) break;
-            
-            /* Use select to avoid blocking indefinitely */
-            fd_set readfds;
-            struct timeval timeout;
-            FD_ZERO(&readfds);
-            FD_SET(fd, &readfds);
-            timeout.tv_sec = 0;  /* 100ms timeout */
-            timeout.tv_usec = 100000;
-            
-            printf("input_file: calling select() with 100ms timeout\n");
-            int select_result = select(fd + 1, &readfds, NULL, NULL, &timeout);
-            printf("input_file: select() returned %d\n", select_result);
-            
-            if(select_result == -1) {
-                perror("select failed");
-                break;
-            } else if(select_result == 0) {
-                /* Timeout - check stop condition and continue */
-                printf("input_file: select timeout, checking stop condition\n");
-                if(pglobal->stop) break;
-                continue;
-            }
-            
-            /* Data available, read inotify event */
+            /* wait for new frame, read will block until something happens */
             rc = read(fd, ev, size);
             if(rc == -1) {
                 perror("reading inotify events failed\n");
@@ -399,11 +329,6 @@ void *worker_thread(void *arg)
             continue;
 #endif
         } else {
-            /* Check stop condition in ExistingFiles mode */
-            if(pglobal->stop) break;
-            
-            printf("input_file: processing file %d/%d: %s\n", currentFileNumber, fileCount, fileList[currentFileNumber]->d_name);
-            
             /* Optimized file extension check */
             const char *filename = fileList[currentFileNumber]->d_name;
             const char *ext = strrchr(filename, '.');
@@ -434,16 +359,10 @@ void *worker_thread(void *arg)
                         currentFileNumber = 0;
                     }
                 }
-                /* Check stop condition during file iteration */
-                if(pglobal->stop) break;
                 continue;
             }
         }
 
-        /* Check stop condition before file operations */
-        if(pglobal->stop) break;
-
-        printf("input_file: opening file: %s\n", buffer);
         /* open file for reading */
         rc = file = open(buffer, O_RDONLY);
         if(rc == -1) {
@@ -461,27 +380,8 @@ void *worker_thread(void *arg)
 
         filesize = stats.st_size;
 
-        /* Check stop condition after file operations */
-        if(pglobal->stop) {
-            close(file);
-            break;
-        }
-
         /* copy frame from file to global buffer */
-        /* Check stop condition before blocking mutex lock */
-        if(pglobal->stop) break;
-        
-        printf("input_file: trying to lock mutex\n");
-        /* Try to lock mutex without blocking */
-        int lock_result = pthread_mutex_trylock(&pglobal->in[plugin_number].db);
-        if(lock_result != 0) {
-            close(file);
-            printf("input_file: mutex lock failed (result=%d), checking stop condition\n", lock_result);
-            if(pglobal->stop) break;
-            usleep(10000); /* 10ms delay before retry */
-            continue;
-        }
-        printf("input_file: mutex locked successfully\n");
+        pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
         /* allocate memory for frame - use static buffer if possible */
         if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer)
@@ -501,26 +401,11 @@ void *worker_thread(void *arg)
             }
         }
 
-        /* Check stop condition before read operation */
-        if(pglobal->stop) {
-            close(file);
-            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
-            break;
-        }
+        /* Use buffered read for better performance */
+        file_read_buffer read_buf;
+        init_file_read_buffer(&read_buf, file);
         
-        printf("input_file: reading %zu bytes from file\n", filesize);
-        /* Use direct read to avoid blocking in buffered_read */
-        ssize_t bytes_read = read(file, pglobal->in[plugin_number].buf, filesize);
-        printf("input_file: read %zd bytes\n", bytes_read);
-        
-        /* Check stop condition immediately after read */
-        if(pglobal->stop) {
-            printf("input_file: stop condition detected after read\n");
-            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
-            close(file);
-            break;
-        }
-        
+        ssize_t bytes_read = buffered_read(&read_buf, pglobal->in[plugin_number].buf, filesize);
         if(bytes_read == -1) {
             perror("could not read from file");
             if (pglobal->in[plugin_number].buf != static_file_buffer) {
@@ -552,39 +437,11 @@ void *worker_thread(void *arg)
             }
         }
 
-        /* Split delay into smaller chunks to check stop condition */
-        if(delay != 0) {
-            printf("input_file: starting delay of %.1f seconds\n", delay);
-            int delay_ms = (int)(delay * 1000);
-            int chunk_ms = 50; /* 50ms chunks */
-            while(delay_ms > 0 && !pglobal->stop) {
-                int sleep_time = (delay_ms < chunk_ms) ? delay_ms : chunk_ms;
-                usleep(sleep_time * 1000);
-                delay_ms -= sleep_time;
-                printf("input_file: delay remaining: %d ms, stop=%d\n", delay_ms, pglobal->stop);
-                
-                /* Check stop condition after each sleep chunk */
-                if(pglobal->stop) {
-                    printf("input_file: stop detected in delay loop, breaking\n");
-                    break;
-                }
-            }
-            printf("input_file: delay completed\n");
-        }
-        
-        /* Add small delay in ExistingFiles mode to allow stop signal processing */
-        if (mode == ExistingFiles) {
-            usleep(5000); /* 5ms delay - even faster response to stop signal */
-        }
-        
-        printf("input_file: end of iteration, stop=%d\n", pglobal->stop);
-        printf("input_file: about to check while condition, stop=%d\n", pglobal->stop);
+        if(delay != 0)
+            usleep(1000 * 1000 * delay);
     }
-    printf("input_file: exited main loop, stop=%d\n", pglobal->stop);
-    printf("input_file: about to enter thread_quit section\n");
 
 thread_quit:
-    printf("input_file: in thread_quit section\n");
     while (fileCount--) {
        free(fileList[fileCount]);
     }
@@ -592,28 +449,22 @@ thread_quit:
 
     DBG("leaving input thread, calling cleanup function now\n");
     /* call cleanup handler, signal with the parameter */
-    printf("input_file: calling pthread_cleanup_pop(1)\n");
     pthread_cleanup_pop(1);
-    printf("input_file: pthread_cleanup_pop(1) completed\n");
-    
-    printf("input_file: worker_thread about to return NULL\n");
 
     return NULL;
 }
 
 void worker_cleanup(void *arg)
 {
-    printf("input_file: worker_cleanup called\n");
-    
     static unsigned char first_run = 1;
 
     if(!first_run) {
-        printf("input_file: already cleaned up resources\n");
+        DBG("already cleaned up resources\n");
         return;
     }
 
     first_run = 0;
-    printf("input_file: cleaning up resources allocated by input thread\n");
+    DBG("cleaning up resources allocated by input thread\n");
 
     if(pglobal->in[plugin_number].buf != NULL && pglobal->in[plugin_number].buf != static_file_buffer) {
         free(pglobal->in[plugin_number].buf);
@@ -634,8 +485,6 @@ void worker_cleanup(void *arg)
         }
 #endif
     }
-    
-    printf("input_file: worker_cleanup completed\n");
 }
 
 /* Buffered I/O implementation */

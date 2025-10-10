@@ -143,7 +143,7 @@ static void signal_handler(int sig)
     /* signal "stop" to threads */
     LOG("setting signal to stop\n");
     global.stop = 1;
-    usleep(100 * 1000); /* 100ms instead of 1s */
+    usleep(1000 * 1000);
 
     /* clean up threads */
     LOG("force cancellation of threads and cleanup resources\n");
@@ -165,7 +165,7 @@ static void signal_handler(int sig)
                 free(global.out[i].param.argv[j]);
         }*/
     }
-    usleep(100 * 1000); /* 100ms instead of 1s */
+    usleep(1000 * 1000);
 
     /* close handles of input plugins */
     for(i = 0; i < global.incnt; i++) {

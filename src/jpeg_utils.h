@@ -1,9 +1,3 @@
-#ifndef JPEG_UTILS_H
-#define JPEG_UTILS_H
-
-/* Forward declaration */
-struct vdIn;
-
 /* JPEG compression function (existing) */
 int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int quality);
 
@@ -26,5 +20,3 @@ typedef struct {
     unsigned char *buffer;
     int buffersize;
 } jpeg_rgb_image;
-
-#endif /* JPEG_UTILS_H */

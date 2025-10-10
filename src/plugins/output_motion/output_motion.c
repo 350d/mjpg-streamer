@@ -953,7 +953,7 @@ int output_run(int id)
         OPRINT("could not start worker thread\n");
         return 1;
     }
-    /* Keep thread joinable for proper cleanup */
+    pthread_detach(worker);
 
     return 0;
 }
@@ -966,19 +966,7 @@ Return Value: 0
 int output_stop(int id)
 {
     DBG("stopping worker thread\n");
-    
-    /* Set stop flag first */
-    if(pglobal) {
-        pglobal->stop = 1;
-    }
-    
-    /* Give thread a moment to see the stop flag */
-    usleep(10000); /* 10ms */
-    
-    /* Force cancel if still running */
     pthread_cancel(worker);
-    
-    /* Note: pthread_join removed to avoid blocking on unresponsive threads */
     
     // Stop webhook thread
     if(webhook_thread_running) {
