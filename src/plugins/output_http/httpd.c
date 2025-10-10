@@ -739,12 +739,7 @@ void send_snapshot(cfd *context_fd, int input_number)
     context *server_context = NULL;
 
     /* Get server context for static buffers */
-    for (int i = 0; i < MAX_OUTPUT_PLUGINS; i++) {
-        if (servers[i].id == context_fd->pc->id) {
-            server_context = &servers[i];
-            break;
-        }
-    }
+    server_context = context_fd->pc;
 
     /* wait for a fresh frame */
     pthread_mutex_lock(&pglobal->in[input_number].db);
@@ -791,13 +786,29 @@ void send_snapshot(cfd *context_fd, int input_number)
     #endif
 
     /* write the response */
-    /* Use cached header for better performance */
-    if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
-        if (server_context && (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE)) {
-            if (frame != server_context->static_frame_buffer) free(frame);
-            if (buffer != (char*)server_context->static_header_buffer) free(buffer);
+    if (server_context) {
+        /* Use cached header for better performance */
+        if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
+            if (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE) {
+                if (frame != server_context->static_frame_buffer) free(frame);
+                if (buffer != (char*)server_context->static_header_buffer) free(buffer);
+            }
+            return;
         }
-        return;
+    } else {
+        /* Fallback to sprintf for compatibility */
+        sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
+                "Access-Control-Allow-Origin: *\r\n" \
+                STD_HEADER \
+                "Content-type: image/jpeg\r\n" \
+                "X-Timestamp: %d.%06d\r\n" \
+                "\r\n", (int) timestamp.tv_sec, (int) timestamp.tv_usec);
+        
+        if(write(context_fd->fd, buffer, strlen(buffer)) < 0) {
+            if (frame != NULL) free(frame);
+            if (buffer != NULL) free(buffer);
+            return;
+        }
     }
 
     /* send image data */
