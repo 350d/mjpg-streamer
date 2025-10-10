@@ -597,6 +597,9 @@ thread_quit:
     printf("input_file: worker_thread about to return NULL\n");
 
     return NULL;
+    
+    /* This should never be reached, but if it is, we'll know */
+    printf("input_file: ERROR - reached code after return NULL!\n");
 }
 
 void worker_cleanup(void *arg)
