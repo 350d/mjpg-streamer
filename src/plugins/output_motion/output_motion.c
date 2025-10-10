@@ -860,37 +860,31 @@ void *worker_thread(void *arg)
         scaled_width = width;
         scaled_height = height;
         
-        if(scaled_frame == NULL || prev_width != scaled_width || prev_height != scaled_height) {
-            if(scaled_frame != NULL) free(scaled_frame);
-            scaled_frame = malloc(scaled_width * scaled_height);
-            if(scaled_frame == NULL) {
-                LOG("not enough memory for scaled frame\n");
-                free(gray_data);
-                break;
-            }
+        // Update dimensions tracking
+        if(prev_width != scaled_width || prev_height != scaled_height) {
             prev_width = scaled_width;
             prev_height = scaled_height;
         }
         
-        // Copy the already scaled data (no additional downsampling needed)
-        simd_memcpy(scaled_frame, gray_data, scaled_width * scaled_height);
-        
-        free(gray_data);
+        // Use gray_data directly instead of copying - avoid unnecessary memcpy
+        // This eliminates one memory copy operation per frame
+        unsigned char *current_scaled_frame = gray_data;
 
         /* Initialize previous frame if this is the first frame */
         if(prev_frame == NULL) {
             prev_frame = malloc(scaled_width * scaled_height);
             if(prev_frame == NULL) {
                 LOG("not enough memory for previous frame\n");
-                free(scaled_frame);
+                free(gray_data);
                 break;
             }
-            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
+            free(gray_data);
             continue;
         }
 
         /* Calculate motion level */
-        motion_level = calculate_motion_level(scaled_frame, prev_frame, scaled_width, scaled_height);
+        motion_level = calculate_motion_level(current_scaled_frame, prev_frame, scaled_width, scaled_height);
 
         /* Check if motion detected and not overloaded */
         if(motion_level > brightness_threshold && motion_level < overload_threshold) {
@@ -915,7 +909,7 @@ void *worker_thread(void *arg)
             }
             /* Always update previous frame to prevent accumulation */
             /* The issue was that we were not updating prev_frame during motion */
-            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
         } else if(motion_level >= overload_threshold) {
             /* Motion level too high - likely lighting change, ignore */
             time_t now = time(NULL);
@@ -927,11 +921,14 @@ void *worker_thread(void *arg)
                        motion_level, overload_threshold);
             }
             /* Still update previous frame to prevent accumulation */
-            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
         } else {
             /* Update previous frame when no motion detected */
-            simd_memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
+            simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
         }
+        
+        /* Free the gray_data after processing */
+        free(gray_data);
     }
 
     /* cleanup now */
