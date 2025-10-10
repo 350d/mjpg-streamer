@@ -557,7 +557,13 @@ void *worker_thread(void *arg)
                 int sleep_time = (delay_ms < chunk_ms) ? delay_ms : chunk_ms;
                 usleep(sleep_time * 1000);
                 delay_ms -= sleep_time;
-                printf("input_file: delay remaining: %d ms\n", delay_ms);
+                printf("input_file: delay remaining: %d ms, stop=%d\n", delay_ms, pglobal->stop);
+                
+                /* Check stop condition after each sleep chunk */
+                if(pglobal->stop) {
+                    printf("input_file: stop detected in delay loop, breaking\n");
+                    break;
+                }
             }
             printf("input_file: delay completed\n");
         }
