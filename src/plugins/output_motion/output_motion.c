@@ -911,8 +911,14 @@ void *worker_thread(void *arg)
             memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
         } else if(motion_level >= overload_threshold) {
             /* Motion level too high - likely lighting change, ignore */
-            OPRINT("motion overload detected! level: %.1f%% (overload threshold: %d%%) - ignoring\n", 
-                   motion_level, overload_threshold);
+            time_t now = time(NULL);
+            
+            /* Check cooldown for overload messages to prevent spam */
+            if(now - last_motion_time >= motion_cooldown) {
+                last_motion_time = now;
+                OPRINT("motion overload detected! level: %.1f%% (overload threshold: %d%%) - ignoring\n", 
+                       motion_level, overload_threshold);
+            }
             /* Still update previous frame to prevent accumulation */
             memcpy(prev_frame, scaled_frame, scaled_width * scaled_height);
         } else {
