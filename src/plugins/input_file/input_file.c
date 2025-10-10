@@ -215,8 +215,7 @@ int input_stop(int id)
     /* Force cancel if still running */
     pthread_cancel(worker);
     
-    /* Wait for thread to finish */
-    pthread_join(worker, NULL);
+    /* Note: pthread_join removed to avoid blocking on unresponsive threads */
     
     return 0;
 }

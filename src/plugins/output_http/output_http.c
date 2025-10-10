@@ -33,6 +33,7 @@
 #include <getopt.h>
 #include <pthread.h>
 #include <syslog.h>
+#include <time.h>
 
 #ifdef __linux__
 #include <linux/types.h>          /* for videodev2.h */
@@ -255,8 +256,7 @@ int output_stop(int id)
     /* Force cancel if still running */
     pthread_cancel(servers[id].threadID);
     
-    /* Wait for thread to finish */
-    pthread_join(servers[id].threadID, NULL);
+    /* Note: pthread_join removed to avoid blocking on unresponsive threads */
     
     /* Clean up Stage 3 optimizations */
     cleanup_async_io(&servers[id].async_io);
