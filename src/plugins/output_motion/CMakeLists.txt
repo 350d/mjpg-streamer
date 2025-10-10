@@ -10,25 +10,17 @@ target_include_directories(output_motion PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src
 )
 
-# Find JPEG library (check environment variables first for cross-compilation)
-if(JPEG_INCLUDE_DIR AND JPEG_LIBRARY)
-    # Use provided JPEG paths for cross-compilation
-    target_include_directories(output_motion PRIVATE ${JPEG_INCLUDE_DIR})
+# Use the same JPEG library as the main project (TurboJPEG or libjpeg)
+if(JPEG_LIBRARY)
     target_link_libraries(output_motion ${JPEG_LIBRARY})
     target_compile_definitions(output_motion PRIVATE HAVE_JPEG)
-    message(STATUS "Using provided JPEG: ${JPEG_LIBRARY}")
-else()
-    # Find JPEG library using standard methods
-    find_library(JPEG_LIBRARY jpeg)
-    find_path(JPEG_INCLUDE_DIR jpeglib.h)
-    if(JPEG_LIBRARY AND JPEG_INCLUDE_DIR)
+    if(JPEG_INCLUDE_DIR)
         target_include_directories(output_motion PRIVATE ${JPEG_INCLUDE_DIR})
-        target_link_libraries(output_motion ${JPEG_LIBRARY})
-        target_compile_definitions(output_motion PRIVATE HAVE_JPEG)
-    else()
-        message(WARNING "libjpeg not found - motion detection will be disabled")
-        target_compile_definitions(output_motion PRIVATE NO_JPEG)
     endif()
+    message(STATUS "Using JPEG library for output_motion: ${JPEG_LIBRARY}")
+else()
+    message(WARNING "JPEG library not found - motion detection will be disabled")
+    target_compile_definitions(output_motion PRIVATE NO_JPEG)
 endif()
 
 # Find CURL library (check environment variables first for cross-compilation)

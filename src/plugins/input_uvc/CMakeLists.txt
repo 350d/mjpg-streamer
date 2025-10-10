@@ -25,23 +25,15 @@ if (PLUGIN_INPUT_UVC)
         message(STATUS "Cross-compilation: skipping V4L2 library check")
     endif()
     
-    # Find JPEG library with cross-compilation support
-    if(JPEG_INCLUDE_DIR AND JPEG_LIBRARY)
-        # Use provided JPEG paths for cross-compilation
+    # Use the same JPEG library as the main project (TurboJPEG or libjpeg)
+    if(JPEG_LIBRARY)
         set(JPEG_LIB ${JPEG_LIBRARY})
         set(JPEG_FOUND TRUE)
-        message(STATUS "Using provided JPEG for input_uvc: ${JPEG_LIBRARY}")
+        message(STATUS "Using JPEG library for input_uvc: ${JPEG_LIBRARY}")
     else()
-        # Find JPEG library normally
-        find_library(JPEG_LIB jpeg)
-        if(JPEG_LIB)
-            set(JPEG_FOUND TRUE)
-        endif()
-    endif()
-    
-    if (NOT JPEG_LIB)
         add_definitions(-DNO_LIBJPEG)
-    endif (NOT JPEG_LIB)
+        message(WARNING "JPEG library not found - JPEG compression will be disabled")
+    endif()
 
     MJPG_STREAMER_PLUGIN_COMPILE(input_uvc dynctrl.c
                                            input_uvc.c
