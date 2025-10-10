@@ -30,6 +30,9 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#ifdef __linux__
+#include <sys/epoll.h>
+#endif
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -116,6 +119,216 @@ static int should_use_keep_alive(int fd) {
     /* For now, use Keep-Alive for all connections */
     /* In future, could check client capabilities or configuration */
     return 1;
+}
+
+/* Stage 3: epoll async I/O functions */
+#ifdef __linux__
+int init_async_io(async_io_context *ctx, int max_events) {
+    ctx->max_events = max_events;
+    ctx->client_count = 0;
+    ctx->server_socket_count = 0;
+    
+    ctx->epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (ctx->epfd == -1) {
+        perror("epoll_create1");
+        return -1;
+    }
+    
+    ctx->events = malloc(max_events * sizeof(struct epoll_event));
+    if (!ctx->events) {
+        close(ctx->epfd);
+        return -1;
+    }
+    
+    return 0;
+}
+
+void cleanup_async_io(async_io_context *ctx) {
+    if (ctx->events) {
+        free(ctx->events);
+        ctx->events = NULL;
+    }
+    if (ctx->epfd != -1) {
+        close(ctx->epfd);
+        ctx->epfd = -1;
+    }
+}
+
+int add_server_socket(async_io_context *ctx, int sockfd) {
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = sockfd;
+    
+    if (epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, sockfd, &ev) == -1) {
+        perror("epoll_ctl: ADD server socket");
+        return -1;
+    }
+    
+    ctx->server_sockets[ctx->server_socket_count] = sockfd;
+    ctx->server_socket_count++;
+    
+    return 0;
+}
+
+int add_client_socket(async_io_context *ctx, int sockfd) {
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;  /* Edge-triggered for clients */
+    ev.data.fd = sockfd;
+    
+    if (epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, sockfd, &ev) == -1) {
+        perror("epoll_ctl: ADD client socket");
+        return -1;
+    }
+    
+    ctx->client_count++;
+    return 0;
+}
+
+int remove_client_socket(async_io_context *ctx, int sockfd) {
+    if (epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, sockfd, NULL) == -1) {
+        perror("epoll_ctl: DEL client socket");
+        return -1;
+    }
+    
+    ctx->client_count--;
+    return 0;
+}
+#else
+/* Fallback implementations for non-Linux systems */
+int init_async_io(async_io_context *ctx, int max_events) {
+    ctx->max_events = max_events;
+    ctx->client_count = 0;
+    ctx->server_socket_count = 0;
+    ctx->epfd = -1;
+    ctx->events = NULL;
+    return 0;
+}
+
+void cleanup_async_io(async_io_context *ctx) {
+    /* No-op for non-Linux systems */
+}
+
+int add_server_socket(async_io_context *ctx, int sockfd) {
+    /* No-op for non-Linux systems */
+    return 0;
+}
+
+int add_client_socket(async_io_context *ctx, int sockfd) {
+    /* No-op for non-Linux systems */
+    return 0;
+}
+
+int remove_client_socket(async_io_context *ctx, int sockfd) {
+    /* No-op for non-Linux systems */
+    return 0;
+}
+#endif
+
+/* Stage 3: HTTP header caching functions */
+int init_header_cache(header_cache *cache) {
+    if (cache->initialized) {
+        return 0; /* Already initialized */
+    }
+    
+    /* Initialize snapshot header */
+    cache->snapshot_200.data = malloc(512);
+    if (!cache->snapshot_200.data) return -1;
+    
+    snprintf(cache->snapshot_200.data, 512,
+        "HTTP/1.0 200 OK\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n"
+        "Server: MJPG-Streamer/0.2\r\n"
+        "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
+        "Pragma: no-cache\r\n"
+        "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+        "Content-type: image/jpeg\r\n"
+        "X-Timestamp: %d.%06d\r\n"
+        "\r\n",
+        0, 0); /* Placeholder for timestamp */
+    
+    cache->snapshot_200.len = strlen(cache->snapshot_200.data);
+    cache->snapshot_200.timestamp_pos = cache->snapshot_200.len - 15; /* Position of timestamp */
+    cache->snapshot_200.content_length_pos = -1;
+    
+    /* Initialize stream header */
+    cache->stream_200.data = malloc(512);
+    if (!cache->stream_200.data) return -1;
+    
+    snprintf(cache->stream_200.data, 512,
+        "HTTP/1.0 200 OK\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Connection: keep-alive\r\n"
+        "Keep-Alive: timeout=5, max=100\r\n"
+        "Server: MJPG-Streamer/0.2\r\n"
+        "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
+        "Pragma: no-cache\r\n"
+        "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+        "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n"
+        "\r\n"
+        "--" BOUNDARY "\r\n");
+    
+    cache->stream_200.len = strlen(cache->stream_200.data);
+    cache->stream_200.timestamp_pos = -1;
+    cache->stream_200.content_length_pos = -1;
+    
+    /* Initialize error headers */
+    cache->error_400.data = "HTTP/1.0 400 Bad Request\r\nContent-type: text/plain\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
+    cache->error_400.len = strlen(cache->error_400.data);
+    cache->error_400.timestamp_pos = -1;
+    cache->error_400.content_length_pos = -1;
+    
+    cache->error_404.data = "HTTP/1.0 404 Not Found\r\nContent-type: text/plain\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
+    cache->error_404.len = strlen(cache->error_404.data);
+    cache->error_404.timestamp_pos = -1;
+    cache->error_404.content_length_pos = -1;
+    
+    cache->error_500.data = "HTTP/1.0 500 Internal Server Error\r\nContent-type: text/plain\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
+    cache->error_500.len = strlen(cache->error_500.data);
+    cache->error_500.timestamp_pos = -1;
+    cache->error_500.content_length_pos = -1;
+    
+    cache->json_200.data = "HTTP/1.0 200 OK\r\nContent-type: application/json\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
+    cache->json_200.len = strlen(cache->json_200.data);
+    cache->json_200.timestamp_pos = -1;
+    cache->json_200.content_length_pos = -1;
+    
+    cache->initialized = 1;
+    return 0;
+}
+
+void cleanup_header_cache(header_cache *cache) {
+    if (cache->snapshot_200.data) {
+        free(cache->snapshot_200.data);
+        cache->snapshot_200.data = NULL;
+    }
+    if (cache->stream_200.data) {
+        free(cache->stream_200.data);
+        cache->stream_200.data = NULL;
+    }
+    cache->initialized = 0;
+}
+
+/* Fast header generation using cache */
+static int write_cached_header(int fd, cached_header *header, struct timeval *timestamp) {
+    if (header->timestamp_pos != -1 && timestamp) {
+        /* Update timestamp in cached header */
+        char timestamp_str[32];
+        snprintf(timestamp_str, sizeof(timestamp_str), "%d.%06d", 
+                (int)timestamp->tv_sec, (int)timestamp->tv_usec);
+        
+        /* Write header up to timestamp position */
+        if (write(fd, header->data, header->timestamp_pos) < 0) return -1;
+        /* Write timestamp */
+        if (write(fd, timestamp_str, strlen(timestamp_str)) < 0) return -1;
+        /* Write rest of header */
+        if (write(fd, header->data + header->timestamp_pos + 15, 
+                 header->len - header->timestamp_pos - 15) < 0) return -1;
+    } else {
+        /* Write header as-is */
+        if (write(fd, header->data, header->len) < 0) return -1;
+    }
+    return 0;
 }
 
 static globals *pglobal;
@@ -578,16 +791,17 @@ void send_snapshot(cfd *context_fd, int input_number)
     #endif
 
     /* write the response */
-    sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
-            "Access-Control-Allow-Origin: *\r\n" \
-            STD_HEADER \
-            "Content-type: image/jpeg\r\n" \
-            "X-Timestamp: %d.%06d\r\n" \
-            "\r\n", (int) timestamp.tv_sec, (int) timestamp.tv_usec);
+    /* Use cached header for better performance */
+    if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
+        if (server_context && (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE)) {
+            if (frame != server_context->static_frame_buffer) free(frame);
+            if (buffer != (char*)server_context->static_header_buffer) free(buffer);
+        }
+        return;
+    }
 
-    /* send header and image now using global buffer directly */
-    if (write(context_fd->fd, buffer, strlen(buffer)) < 0 ||
-        write(context_fd->fd, frame, frame_size) < 0) {
+    /* send image data */
+    if (write(context_fd->fd, frame, frame_size) < 0) {
         /* Clean up dynamic buffers if used */
         if (server_context && (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE)) {
             if (frame != server_context->static_frame_buffer) free(frame);
@@ -616,18 +830,9 @@ void send_stream(cfd *context_fd, int input_number)
     struct timeval timestamp;
 
     DBG("preparing header\n");
-    /* Use Keep-Alive if supported */
-    const char *header_template = should_use_keep_alive(context_fd->fd) ? 
-        KEEP_ALIVE_HEADER : STD_HEADER;
-    
-    sprintf(buffer, "HTTP/1.0 200 OK\r\n" \
-            "Access-Control-Allow-Origin: *\r\n" \
-            "%s" \
-            "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n" \
-            "\r\n" \
-            "--" BOUNDARY "\r\n", header_template);
-
-    if(write(context_fd->fd, buffer, strlen(buffer)) < 0) {
+    /* Use cached stream header for better performance */
+    context *server_context = context_fd->pc;
+    if (write_cached_header(context_fd->fd, &server_context->headers.stream_200, NULL) < 0) {
         free(frame);
         return;
     }
@@ -1696,11 +1901,18 @@ void *server_thread(void *arg)
             perror("listen");
             pcontext->sd[i] = -1;
         } else {
-            i++;
-            if(i >= MAX_SD_LEN) {
-                OPRINT("%s(): maximum number of server sockets exceeded", __FUNCTION__);
-                i--;
-                break;
+            /* Add server socket to epoll for async I/O */
+            if (add_server_socket(&pcontext->async_io, pcontext->sd[i]) < 0) {
+                perror("add_server_socket");
+                close(pcontext->sd[i]);
+                pcontext->sd[i] = -1;
+            } else {
+                i++;
+                if(i >= MAX_SD_LEN) {
+                    OPRINT("%s(): maximum number of server sockets exceeded", __FUNCTION__);
+                    i--;
+                    break;
+                }
             }
         }
     }
@@ -1725,6 +1937,28 @@ void *server_thread(void *arg)
 
         DBG("waiting for clients to connect\n");
 
+#ifdef __linux__
+        /* Use epoll for better performance */
+        int nfds = epoll_wait(pcontext->async_io.epfd, pcontext->async_io.events, 
+                             pcontext->async_io.max_events, -1);
+        
+        if(nfds < 0) {
+            if(errno == EINTR) continue;
+            perror("epoll_wait");
+            exit(EXIT_FAILURE);
+        }
+        
+        /* Process all ready events */
+        for(int n = 0; n < nfds; n++) {
+            int ready_fd = pcontext->async_io.events[n].data.fd;
+            
+            /* Check if this is a server socket */
+            for(i = 0; i < MAX_SD_LEN; i++) {
+                if(pcontext->sd[i] == ready_fd) {
+                    pcfd->fd = accept(ready_fd, (struct sockaddr *)&client_addr, &addr_len);
+                    pcfd->pc = pcontext;
+#else
+        /* Fallback to select for non-Linux systems */
         do {
             FD_ZERO(&selectfds);
 
@@ -1749,28 +1983,36 @@ void *server_thread(void *arg)
             if(pcontext->sd[i] != -1 && FD_ISSET(pcontext->sd[i], &selectfds)) {
                 pcfd->fd = accept(pcontext->sd[i], (struct sockaddr *)&client_addr, &addr_len);
                 pcfd->pc = pcontext;
+#endif
 
-                /* start new thread that will handle this TCP connected client */
-                DBG("create thread to handle client that just established a connection\n");
+                    /* start new thread that will handle this TCP connected client */
+                    DBG("create thread to handle client that just established a connection\n");
 
-                if(getnameinfo((struct sockaddr *)&client_addr, addr_len, name, sizeof(name), NULL, 0, NI_NUMERICHOST) == 0) {
-                    DBG("serving client: %s\n", name);
-                }
+                    if(getnameinfo((struct sockaddr *)&client_addr, addr_len, name, sizeof(name), NULL, 0, NI_NUMERICHOST) == 0) {
+                        DBG("serving client: %s\n", name);
+                    }
 
                 #if defined(MANAGMENT)
                 pcfd->client = add_client(name);
                 #endif
 
-                if(pthread_create(&client, NULL, &client_thread, pcfd) != 0) {
-                    DBG("could not launch another client thread\n");
-                    close(pcfd->fd);
-                    free(pcfd);
-                    continue;
+                    if(pthread_create(&client, NULL, &client_thread, pcfd) != 0) {
+                        DBG("could not launch another client thread\n");
+                        close(pcfd->fd);
+                        free(pcfd);
+                        continue;
+                    }
+                    pthread_detach(client);
+                    pcfd = NULL; /* Prevent double-free, pcfd now owned by client_thread */
+#ifdef __linux__
+                    break; /* Found and processed the server socket */
                 }
-                pthread_detach(client);
-                pcfd = NULL; /* Prevent double-free, pcfd now owned by client_thread */
             }
         }
+#else
+                }
+            }
+#endif
         
         /* Free pcfd if no connection was accepted */
         if (pcfd != NULL) {

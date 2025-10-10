@@ -20,8 +20,17 @@
 #                                                                              #
 *******************************************************************************/
 
+#ifdef __linux__
+#include <sys/epoll.h>
+#endif
+#include <stddef.h>
+
 #define IO_BUFFER 256
 #define BUFFER_SIZE 1024
+
+/* epoll constants for async I/O */
+#define MAX_EPOLL_EVENTS 64
+#define EPOLL_TIMEOUT_MS 1000
 
 /* the boundary is used for the M-JPEG stream, it separates the multipart stream of pictures */
 #define BOUNDARY "boundarydonotcross"
@@ -61,6 +70,38 @@
  * Maximum number of server sockets (i.e. protocol families) to listen.
  */
 #define MAX_SD_LEN 50
+
+/* epoll async I/O context */
+typedef struct {
+    int epfd;
+    struct epoll_event *events;
+    int max_events;
+    int client_count;
+    int server_sockets[MAX_SD_LEN];
+    int server_socket_count;
+} async_io_context;
+
+/* Cached HTTP header */
+typedef struct {
+    char *data;
+    size_t len;
+    int timestamp_pos;  /* Position for timestamp insertion (-1 if no timestamp) */
+    int content_length_pos;  /* Position for content-length insertion (-1 if no content-length) */
+} cached_header;
+
+/* HTTP header cache */
+typedef struct {
+    cached_header snapshot_200;
+    cached_header stream_200;
+    cached_header error_400;
+    cached_header error_401;
+    cached_header error_403;
+    cached_header error_404;
+    cached_header error_500;
+    cached_header error_501;
+    cached_header json_200;
+    int initialized;
+} header_cache;
 
 /*
  * Only the following fileypes are supported.
@@ -160,6 +201,10 @@ typedef struct {
     
     /* I/O optimization: write buffering */
     write_buffer write_buf;
+    
+    /* Stage 3 optimizations: async I/O and header caching */
+    async_io_context async_io;
+    header_cache headers;
 } context;
 
 

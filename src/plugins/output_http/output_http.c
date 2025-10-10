@@ -45,6 +45,12 @@
 #include "../../utils.h"
 #include "httpd.h"
 
+/* Forward declarations for Stage 3 functions */
+int init_async_io(async_io_context *ctx, int max_events);
+void cleanup_async_io(async_io_context *ctx);
+int init_header_cache(header_cache *cache);
+void cleanup_header_cache(header_cache *cache);
+
 #define OUTPUT_PLUGIN_NAME "HTTP output plugin"
 /*
  * keep context for each server
@@ -65,7 +71,7 @@ void help(void)
             " [-w | --www ]...........: folder that contains webpages in \n" \
             "                           flat hierarchy (no subfolders)\n" \
             " [-p | --port ]..........: TCP port for this HTTP server\n" \
-	    " [-l ] --listen ]........: Listen on Hostname / IP\n" \
+	        " [-l ] --listen ]........: Listen on Hostname / IP\n" \
             " [-c | --credentials ]...: ask for \"username:password\" on connect\n" \
             " [-n | --nocommands ]....: disable execution of commands\n"
             " ---------------------------------------------------------------\n");
@@ -200,6 +206,18 @@ int output_init(output_parameter *param, int id)
     servers[param->id].write_buf.buffer_pos = 0;
     servers[param->id].write_buf.fd = -1;  /* Will be set when client connects */
     servers[param->id].write_buf.use_buffering = 1;
+    
+    /* Initialize Stage 3 optimizations: async I/O and header caching */
+    if (init_async_io(&servers[param->id].async_io, MAX_EPOLL_EVENTS) != 0) {
+        OPRINT("Failed to initialize async I/O\n");
+        return -1;
+    }
+    
+    if (init_header_cache(&servers[param->id].headers) != 0) {
+        OPRINT("Failed to initialize header cache\n");
+        cleanup_async_io(&servers[param->id].async_io);
+        return -1;
+    }
 
     OPRINT("www-folder-path......: %s\n", (www_folder == NULL) ? "disabled" : www_folder);
     OPRINT("HTTP TCP port........: %d\n", ntohs(port));
@@ -226,6 +244,10 @@ int output_stop(int id)
 
     DBG("will cancel server thread #%02d\n", id);
     pthread_cancel(servers[id].threadID);
+    
+    /* Clean up Stage 3 optimizations */
+    cleanup_async_io(&servers[id].async_io);
+    cleanup_header_cache(&servers[id].headers);
 
     return 0;
 }
