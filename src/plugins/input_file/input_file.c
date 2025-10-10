@@ -513,8 +513,16 @@ void *worker_thread(void *arg)
             }
         }
 
-        if(delay != 0)
-            usleep(1000 * 1000 * delay);
+        /* Split delay into smaller chunks to check stop condition */
+        if(delay != 0) {
+            int delay_ms = (int)(delay * 1000);
+            int chunk_ms = 50; /* 50ms chunks */
+            while(delay_ms > 0 && !pglobal->stop) {
+                int sleep_time = (delay_ms < chunk_ms) ? delay_ms : chunk_ms;
+                usleep(sleep_time * 1000);
+                delay_ms -= sleep_time;
+            }
+        }
         
         /* Add small delay in ExistingFiles mode to allow stop signal processing */
         if (mode == ExistingFiles) {
