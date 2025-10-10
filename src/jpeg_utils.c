@@ -563,14 +563,30 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     unsigned char *enhanced_data = NULL;
     int enhanced_size = 0;
     
-    handle = tjInitDecompress();
-    if (!handle) {
+    /* Sanity check: print TurboJPEG version */
+    printf("TurboJPEG version: %s\n", tjGetVersion());
+    
+    /* Sanity check: validate arguments */
+    if (!jpeg_data || jpeg_size <= 0 || !width || !height) {
+        printf("ERROR: Invalid arguments - jpeg_data=%p, jpeg_size=%d, width=%p, height=%p\n", 
+               jpeg_data, jpeg_size, width, height);
         return -1;
     }
     
+    handle = tjInitDecompress();
+    if (!handle) {
+        printf("ERROR: tjInitDecompress() failed\n");
+        return -1;
+    }
+    
+    printf("TurboJPEG handle created successfully\n");
+    
     /* Try with original data first */
-    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
+    printf("Calling tjDecompressHeader3 with original data: size=%d (unsigned long: %lu)\n", 
+           jpeg_size, (unsigned long)jpeg_size);
+    result = tjDecompressHeader3(handle, jpeg_data, (unsigned long)jpeg_size, width, height, NULL, NULL);
     if (result == 0) {
+        printf("TurboJPEG original success: %dx%d\n", *width, *height);
         tjDestroy(handle);
         return 0;  /* Success with original data */
     }
@@ -584,9 +600,13 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
         printf("Enhanced JPEG tail: %02X %02X %02X %02X\n", 
                enhanced_data[enhanced_size-4], enhanced_data[enhanced_size-3], 
                enhanced_data[enhanced_size-2], enhanced_data[enhanced_size-1]);
-        result = tjDecompressHeader3(handle, enhanced_data, enhanced_size, width, height, NULL, NULL);
+        printf("Calling tjDecompressHeader3 with enhanced data: size=%d (unsigned long: %lu)\n", 
+               enhanced_size, (unsigned long)enhanced_size);
+        result = tjDecompressHeader3(handle, enhanced_data, (unsigned long)enhanced_size, width, height, NULL, NULL);
         printf("TurboJPEG enhanced result: %d\n", result);
-        if (result != 0) {
+        if (result == 0) {
+            printf("TurboJPEG enhanced success: %dx%d\n", *width, *height);
+        } else {
             printf("TurboJPEG enhanced error: %s\n", tjGetErrorStr2(handle));
         }
         if (enhanced_data != jpeg_data) {
