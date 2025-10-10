@@ -575,7 +575,9 @@ void *worker_thread(void *arg)
         }
         
         printf("input_file: end of iteration, stop=%d\n", pglobal->stop);
+        printf("input_file: about to check while condition, stop=%d\n", pglobal->stop);
     }
+    printf("input_file: exited main loop, stop=%d\n", pglobal->stop);
 
 thread_quit:
     while (fileCount--) {
