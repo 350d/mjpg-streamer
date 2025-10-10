@@ -202,14 +202,14 @@ int input_init(input_parameter *param, int id)
 
 int input_stop(int id)
 {
-    LOG("input_file: will cancel input thread\n");
+    printf("input_file: will cancel input thread\n");
     
     /* Set stop flag first */
     if(pglobal) {
         pglobal->stop = 1;
-        LOG("input_file: stop flag set to 1\n");
+        printf("input_file: stop flag set to 1\n");
     } else {
-        LOG("input_file: pglobal is NULL!\n");
+        printf("input_file: pglobal is NULL!\n");
     }
     
     /* Give thread multiple chances to see the stop flag */
@@ -223,9 +223,9 @@ int input_stop(int id)
     }
     
     /* Force cancel if still running */
-    LOG("input_file: calling pthread_cancel\n");
+    printf("input_file: calling pthread_cancel\n");
     pthread_cancel(worker);
-    LOG("input_file: pthread_cancel completed\n");
+    printf("input_file: pthread_cancel completed\n");
     
     /* Note: pthread_join removed to avoid blocking on unresponsive threads */
     
@@ -322,11 +322,11 @@ void *worker_thread(void *arg)
     while(!pglobal->stop) {
         /* Check stop condition at the beginning of each iteration */
         if(pglobal->stop) {
-            LOG("input_file: stop condition detected in main loop\n");
+            printf("input_file: stop condition detected in main loop\n");
             break;
         }
         
-        LOG("input_file: starting new iteration, mode=%d\n", mode);
+        printf("input_file: starting new iteration, mode=%d\n", mode);
         
         if (mode == NewFilesOnly) {
 #ifdef __linux__
