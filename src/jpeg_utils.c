@@ -36,7 +36,7 @@
 
 #ifdef HAVE_TURBOJPEG
     #include <turbojpeg.h>
-    #define JPEG_LIBRARY_TURBO 0  /* Disabled - incompatible with MJPEG streams */
+    #define JPEG_LIBRARY_TURBO 1
 #else
     #define JPEG_LIBRARY_TURBO 0
 #endif
@@ -182,6 +182,18 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     
     printf("Enhanced JPEG created: clean_size=%d, enhanced_size=%d, DHT inserted before SOS at %d\n", 
            clean_size, *enhanced_size, sos_pos);
+    
+    /* Verify enhanced JPEG structure */
+    if ((*enhanced_data)[0] != 0xFF || (*enhanced_data)[1] != 0xD8) {
+        printf("ERROR: Enhanced JPEG does not start with SOI marker!\n");
+        free(*enhanced_data);
+        return -1;
+    }
+    if ((*enhanced_data)[*enhanced_size-2] != 0xFF || (*enhanced_data)[*enhanced_size-1] != 0xD9) {
+        printf("ERROR: Enhanced JPEG does not end with EOI marker!\n");
+        free(*enhanced_data);
+        return -1;
+    }
     
     return 0;
 }
@@ -544,7 +556,50 @@ Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
 {
-    /* Use libjpeg implementation - TurboJPEG is incompatible with MJPEG streams */
+#if JPEG_LIBRARY_TURBO
+    /* TurboJPEG implementation with enhanced JPEG data */
+    tjhandle handle = NULL;
+    int result = -1;
+    unsigned char *enhanced_data = NULL;
+    int enhanced_size = 0;
+    
+    handle = tjInitDecompress();
+    if (!handle) {
+        return -1;
+    }
+    
+    /* Try with original data first */
+    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
+    if (result == 0) {
+        tjDestroy(handle);
+        return 0;  /* Success with original data */
+    }
+    
+    printf("TurboJPEG original failed: %s\n", tjGetErrorStr2(handle));
+    
+    /* Try with enhanced data (with Huffman tables) */
+    if (create_enhanced_jpeg(jpeg_data, jpeg_size, &enhanced_data, &enhanced_size) == 0) {
+        printf("Enhanced JPEG created: original_size=%d, enhanced_size=%d\n", jpeg_size, enhanced_size);
+        printf("Enhanced JPEG header: %02X %02X %02X %02X\n", enhanced_data[0], enhanced_data[1], enhanced_data[2], enhanced_data[3]);
+        printf("Enhanced JPEG tail: %02X %02X %02X %02X\n", 
+               enhanced_data[enhanced_size-4], enhanced_data[enhanced_size-3], 
+               enhanced_data[enhanced_size-2], enhanced_data[enhanced_size-1]);
+        result = tjDecompressHeader3(handle, enhanced_data, enhanced_size, width, height, NULL, NULL);
+        printf("TurboJPEG enhanced result: %d\n", result);
+        if (result != 0) {
+            printf("TurboJPEG enhanced error: %s\n", tjGetErrorStr2(handle));
+        }
+        if (enhanced_data != jpeg_data) {
+            free(enhanced_data);
+        }
+        tjDestroy(handle);
+        return (result == 0) ? 0 : -1;
+    }
+    
+    tjDestroy(handle);
+    return -1;
+#else
+    /* libjpeg implementation */
 #ifdef __linux__
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
@@ -573,6 +628,7 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
 #else
     /* No JPEG support on non-Linux systems */
     return -1;
+#endif
 #endif
 }
 
