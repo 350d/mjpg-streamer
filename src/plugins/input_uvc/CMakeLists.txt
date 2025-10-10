@@ -45,7 +45,7 @@ if (PLUGIN_INPUT_UVC)
 
     MJPG_STREAMER_PLUGIN_COMPILE(input_uvc dynctrl.c
                                            input_uvc.c
-                                           jpeg_utils.c
+                                           ../../jpeg_utils.c
                                            v4l2uvc.c)
     
     target_link_libraries(input_uvc mjpg_streamer_utils)

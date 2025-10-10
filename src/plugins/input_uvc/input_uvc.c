@@ -46,7 +46,7 @@
 #include "v4l2uvc.h" // this header will includes the ../../mjpg_streamer.h
 
 #ifndef NO_LIBJPEG
-    #include "jpeg_utils.h"
+    #include "../../jpeg_utils.h"
     #include "huffman.h"
 #endif
 

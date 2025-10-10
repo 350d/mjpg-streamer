@@ -47,7 +47,7 @@
 #endif
 
 /* Use centralized JPEG utilities */
-#include "../input_uvc/jpeg_utils.h"
+#include "../../jpeg_utils.h"
 
 #ifdef __linux__
 #include <linux/types.h>

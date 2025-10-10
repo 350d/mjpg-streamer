@@ -30,7 +30,7 @@
 #include <linux/types.h>          /* for videodev2.h */
 #include <linux/videodev2.h>
 
-#include "v4l2uvc.h"
+#include "plugins/input_uvc/v4l2uvc.h"
 
 #define OUTPUT_BUF_SIZE  4096
 
