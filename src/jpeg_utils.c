@@ -502,18 +502,8 @@ Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
 {
-    static int debug_printed = 0;
-    if (!debug_printed) {
-        debug_printed = 1;
 #if JPEG_LIBRARY_TURBO
-        printf("jpeg_get_dimensions: Using TurboJPEG with libjpeg fallback\n");
-#else
-        printf("jpeg_get_dimensions: Using libjpeg\n");
-#endif
-    }
-    
-#if JPEG_LIBRARY_TURBO
-    /* Try TurboJPEG first with enhanced JPEG data, fallback to libjpeg if it fails */
+    /* TurboJPEG implementation with enhanced JPEG data */
     tjhandle handle = NULL;
     int result = -1;
     unsigned char *enhanced_data = NULL;
@@ -521,8 +511,7 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     
     handle = tjInitDecompress();
     if (!handle) {
-        printf("TurboJPEG: tjInitDecompress() failed, falling back to libjpeg\n");
-        goto fallback_libjpeg;
+        return -1;
     }
     
     /* Try with original data first */
@@ -535,28 +524,18 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     /* Try with enhanced data (with Huffman tables) */
     if (create_enhanced_jpeg(jpeg_data, jpeg_size, &enhanced_data, &enhanced_size) == 0) {
         result = tjDecompressHeader3(handle, enhanced_data, enhanced_size, width, height, NULL, NULL);
-        if (result == 0) {
-            tjDestroy(handle);
-            if (enhanced_data != jpeg_data) {
-                free(enhanced_data);
-            }
-            printf("TurboJPEG: Success with enhanced JPEG data (added Huffman tables)\n");
-            return 0;  /* Success with enhanced data */
-        }
         if (enhanced_data != jpeg_data) {
             free(enhanced_data);
         }
+        tjDestroy(handle);
+        return (result == 0) ? 0 : -1;
     }
     
-    printf("TurboJPEG: tjDecompressHeader3() failed with code %d, falling back to libjpeg\n", result);
     tjDestroy(handle);
-    
-fallback_libjpeg:
-    /* Fallback to libjpeg implementation */
-#endif
-
+    return -1;
+#else
+    /* libjpeg implementation */
 #ifdef __linux__
-    /* libjpeg implementation (used as fallback or primary) */
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     
@@ -584,6 +563,7 @@ fallback_libjpeg:
 #else
     /* No JPEG support on non-Linux systems */
     return -1;
+#endif
 #endif
 }
 
