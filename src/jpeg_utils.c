@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <string.h>
+#include "utils.h"
 
 /* Always include libjpeg for fallback, and TurboJPEG if available */
 #ifdef __linux__
@@ -170,14 +171,14 @@ static int create_enhanced_jpeg(const unsigned char *jpeg_data, int jpeg_size,
     }
     
     /* Copy JPEG data up to SOS marker */
-    memcpy(*enhanced_data, clean_data, sos_pos);
+    simd_memcpy(*enhanced_data, clean_data, sos_pos);
     
     /* Insert Huffman tables before SOS */
-    memcpy(*enhanced_data + sos_pos, dht_data, sizeof(dht_data));
+    simd_memcpy(*enhanced_data + sos_pos, dht_data, sizeof(dht_data));
     
     /* Copy rest of JPEG data (from SOS to EOI) */
-    memcpy(*enhanced_data + sos_pos + sizeof(dht_data), 
-           clean_data + sos_pos, clean_size - sos_pos);
+    simd_memcpy(*enhanced_data + sos_pos + sizeof(dht_data), 
+                clean_data + sos_pos, clean_size - sos_pos);
     
     printf("Enhanced JPEG created: clean_size=%d, enhanced_size=%d, DHT inserted before SOS at %d\n", 
            clean_size, *enhanced_size, sos_pos);
