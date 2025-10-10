@@ -327,6 +327,7 @@ void *worker_thread(void *arg)
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop) {
+        printf("input_file: main loop iteration, stop=%d\n", pglobal->stop);
         /* Check stop condition at the beginning of each iteration */
         if(pglobal->stop) {
             printf("input_file: stop condition detected in main loop\n");
@@ -572,6 +573,8 @@ void *worker_thread(void *arg)
         if (mode == ExistingFiles) {
             usleep(5000); /* 5ms delay - even faster response to stop signal */
         }
+        
+        printf("input_file: end of iteration, stop=%d\n", pglobal->stop);
     }
 
 thread_quit:
