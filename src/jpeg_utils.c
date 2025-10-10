@@ -236,7 +236,7 @@ METHODDEF(boolean) empty_output_buffer(j_compress_ptr cinfo)
 {
     mjpg_dest_ptr dest = (mjpg_dest_ptr) cinfo->dest;
 
-    memcpy(dest->outbuffer_cursor, dest->buffer, OUTPUT_BUF_SIZE);
+    simd_memcpy(dest->outbuffer_cursor, dest->buffer, OUTPUT_BUF_SIZE);
     dest->outbuffer_cursor += OUTPUT_BUF_SIZE;
     *(dest->written) += OUTPUT_BUF_SIZE;
 
@@ -258,7 +258,7 @@ METHODDEF(void) term_destination(j_compress_ptr cinfo)
     size_t datacount = OUTPUT_BUF_SIZE - dest->pub.free_in_buffer;
 
     /* Write any data remaining in the buffer */
-    memcpy(dest->outbuffer_cursor, dest->buffer, datacount);
+    simd_memcpy(dest->outbuffer_cursor, dest->buffer, datacount);
     dest->outbuffer_cursor += datacount;
     *(dest->written) += datacount;
 }
