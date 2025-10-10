@@ -564,7 +564,7 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     int enhanced_size = 0;
     
     /* Sanity check: print TurboJPEG version */
-    printf("TurboJPEG version: %s\n", tjGetVersion());
+    printf("TurboJPEG version: %s\n", tjGetVersionStr());
     
     /* Sanity check: validate arguments */
     if (!jpeg_data || jpeg_size <= 0 || !width || !height) {
@@ -597,10 +597,10 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     
     /* Try fallback to tjDecompressHeader2 for older TurboJPEG versions */
     printf("Trying fallback to tjDecompressHeader2...\n");
-    int subsamp, colorspace;
-    result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, width, height, &subsamp, &colorspace);
+    int subsamp;
+    result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, width, height, &subsamp);
     if (result == 0) {
-        printf("TurboJPEG fallback success: %dx%d, subsamp=%d, colorspace=%d\n", *width, *height, subsamp, colorspace);
+        printf("TurboJPEG fallback success: %dx%d, subsamp=%d\n", *width, *height, subsamp);
         tjDestroy(handle);
         return 0;  /* Success with fallback */
     }
@@ -625,9 +625,9 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
             printf("TurboJPEG enhanced error: %s\n", tjGetErrorStr2(handle));
             /* Try fallback for enhanced data too */
             printf("Trying fallback tjDecompressHeader2 with enhanced data...\n");
-            result = tjDecompressHeader2(handle, enhanced_data, (unsigned long)enhanced_size, width, height, &subsamp, &colorspace);
+            result = tjDecompressHeader2(handle, enhanced_data, (unsigned long)enhanced_size, width, height, &subsamp);
             if (result == 0) {
-                printf("TurboJPEG enhanced fallback success: %dx%d, subsamp=%d, colorspace=%d\n", *width, *height, subsamp, colorspace);
+                printf("TurboJPEG enhanced fallback success: %dx%d, subsamp=%d\n", *width, *height, subsamp);
             } else {
                 printf("TurboJPEG enhanced fallback also failed: %s\n", tjGetErrorStr2(handle));
             }
