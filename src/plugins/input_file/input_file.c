@@ -204,6 +204,7 @@ int input_init(input_parameter *param, int id)
 
 int input_stop(int id)
 {
+    printf("input_file: input_stop called for id=%d\n", id);
     printf("input_file: will cancel input thread\n");
     
     /* Set stop flag first */
@@ -230,6 +231,8 @@ int input_stop(int id)
     printf("input_file: pthread_cancel completed\n");
     
     /* Note: pthread_join removed to avoid blocking on unresponsive threads */
+    
+    printf("input_file: input_stop completed\n");
     
     return 0;
 }
