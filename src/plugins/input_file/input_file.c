@@ -330,8 +330,8 @@ void *worker_thread(void *arg)
             struct timeval timeout;
             FD_ZERO(&readfds);
             FD_SET(fd, &readfds);
-            timeout.tv_sec = 1;  /* 1 second timeout */
-            timeout.tv_usec = 0;
+            timeout.tv_sec = 0;  /* 100ms timeout */
+            timeout.tv_usec = 100000;
             
             int select_result = select(fd + 1, &readfds, NULL, NULL, &timeout);
             if(select_result == -1) {
