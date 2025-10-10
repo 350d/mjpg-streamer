@@ -31,28 +31,6 @@
 #ifdef HAVE_TURBOJPEG
     #include <turbojpeg.h>
     #define JPEG_LIBRARY_TURBO 1
-    /* TurboJPEG doesn't need these macros, define them as empty */
-    #define METHODDEF(type) type
-    #define GLOBAL(type) type
-    /* Define libjpeg types for compatibility */
-    typedef unsigned char JOCTET;
-    typedef struct jpeg_compress_struct *j_compress_ptr;
-    typedef struct jpeg_common_struct *j_common_ptr;
-    typedef unsigned char **JSAMPROW;
-    typedef JSAMPROW *JSAMPARRAY;
-    typedef int boolean;
-    #define TRUE 1
-    #define FALSE 0
-    #define JPOOL_IMAGE 0
-    #define JPOOL_PERMANENT 1
-    /* Define jpeg_destination_mgr structure for TurboJPEG compatibility */
-    struct jpeg_destination_mgr {
-        void (*init_destination)(j_compress_ptr cinfo);
-        boolean (*empty_output_buffer)(j_compress_ptr cinfo);
-        void (*term_destination)(j_compress_ptr cinfo);
-        JOCTET *next_output_byte;
-        size_t free_in_buffer;
-    };
 #elif defined(__linux__)
     #include <jpeglib.h>
     #define JPEG_LIBRARY_TURBO 0
@@ -71,6 +49,10 @@ static int jpeg_library_type = 0;  /* 0 = libjpeg, 1 = turbojpeg */
 static void *turbojpeg_handle = NULL;
 
 #ifdef __linux__
+#if JPEG_LIBRARY_TURBO
+/* TurboJPEG implementation */
+#else
+/* libjpeg implementation */
 #define OUTPUT_BUF_SIZE  4096
 
 typedef struct {
@@ -86,7 +68,9 @@ typedef struct {
 } mjpg_destination_mgr;
 
 typedef mjpg_destination_mgr * mjpg_dest_ptr;
+#endif
 
+#if !JPEG_LIBRARY_TURBO
 /******************************************************************************
 Description.:
 Input Value.:
@@ -319,6 +303,100 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
 
     return (written);
 }
+#endif /* !JPEG_LIBRARY_TURBO */
+
+#if JPEG_LIBRARY_TURBO
+/******************************************************************************
+Description.: TurboJPEG implementation of compress_image_to_jpeg
+Input Value.: video structure from v4l2uvc.c/h, destination buffer and buffersize
+Return Value: the buffer will contain the compressed data
+******************************************************************************/
+int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int quality)
+{
+    tjhandle handle = NULL;
+    unsigned char *rgb_buffer = NULL;
+    unsigned long jpeg_size = 0;
+    int result = -1;
+    
+    /* Create TurboJPEG handle */
+    handle = tjInitCompress();
+    if (!handle) {
+        printf("TurboJPEG: tjInitCompress() failed\n");
+        return -1;
+    }
+    
+    /* Convert YUV to RGB if needed */
+    if (vd->formatIn == V4L2_PIX_FMT_YUYV || vd->formatIn == V4L2_PIX_FMT_UYVY) {
+        /* Allocate RGB buffer */
+        rgb_buffer = malloc(vd->width * vd->height * 3);
+        if (!rgb_buffer) {
+            tjDestroy(handle);
+            return -1;
+        }
+        
+        /* Convert YUV to RGB (simplified conversion) */
+        unsigned char *yuv = vd->framebuffer;
+        unsigned char *rgb = rgb_buffer;
+        int i;
+        
+        for (i = 0; i < vd->width * vd->height / 2; i++) {
+            int y1, y2, u, v;
+            
+            if (vd->formatIn == V4L2_PIX_FMT_YUYV) {
+                y1 = yuv[0]; u = yuv[1]; y2 = yuv[2]; v = yuv[3];
+            } else { /* UYVY */
+                u = yuv[0]; y1 = yuv[1]; v = yuv[2]; y2 = yuv[3];
+            }
+            
+            /* Convert YUV to RGB for first pixel */
+            int r1 = y1 + 1.402 * (v - 128);
+            int g1 = y1 - 0.344136 * (u - 128) - 0.714136 * (v - 128);
+            int b1 = y1 + 1.772 * (u - 128);
+            
+            /* Convert YUV to RGB for second pixel */
+            int r2 = y2 + 1.402 * (v - 128);
+            int g2 = y2 - 0.344136 * (u - 128) - 0.714136 * (v - 128);
+            int b2 = y2 + 1.772 * (u - 128);
+            
+            /* Clamp values */
+            rgb[0] = (r1 < 0) ? 0 : (r1 > 255) ? 255 : r1;
+            rgb[1] = (g1 < 0) ? 0 : (g1 > 255) ? 255 : g1;
+            rgb[2] = (b1 < 0) ? 0 : (b1 > 255) ? 255 : b1;
+            rgb[3] = (r2 < 0) ? 0 : (r2 > 255) ? 255 : r2;
+            rgb[4] = (g2 < 0) ? 0 : (g2 > 255) ? 255 : g2;
+            rgb[5] = (b2 < 0) ? 0 : (b2 > 255) ? 255 : b2;
+            
+            yuv += 4;
+            rgb += 6;
+        }
+    } else if (vd->formatIn == V4L2_PIX_FMT_RGB24) {
+        rgb_buffer = vd->framebuffer;
+    } else {
+        /* Unsupported format */
+        tjDestroy(handle);
+        return -1;
+    }
+    
+    /* Compress to JPEG */
+    result = tjCompress2(handle, rgb_buffer, vd->width, 0, vd->height, 
+                        TJPF_RGB, &buffer, &jpeg_size, TJSAMP_444, quality, 0);
+    
+    if (result == 0) {
+        result = (int)jpeg_size;
+    } else {
+        printf("TurboJPEG: tjCompress2() failed\n");
+        result = -1;
+    }
+    
+    /* Cleanup */
+    if (vd->formatIn == V4L2_PIX_FMT_YUYV || vd->formatIn == V4L2_PIX_FMT_UYVY) {
+        free(rgb_buffer);
+    }
+    tjDestroy(handle);
+    
+    return result;
+}
+#endif /* JPEG_LIBRARY_TURBO */
 #endif /* __linux__ */
 
 /******************************************************************************
@@ -328,6 +406,22 @@ Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int *height)
 {
+#if JPEG_LIBRARY_TURBO
+    /* TurboJPEG implementation */
+    tjhandle handle = NULL;
+    int result = -1;
+    
+    handle = tjInitDecompress();
+    if (!handle) {
+        return -1;
+    }
+    
+    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
+    
+    tjDestroy(handle);
+    return result;
+#else
+    /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     
@@ -352,6 +446,7 @@ int jpeg_get_dimensions(unsigned char *jpeg_data, int jpeg_size, int *width, int
     jpeg_destroy_decompress(&cinfo);
     
     return 0;
+#endif
 }
 
 /******************************************************************************
@@ -361,6 +456,37 @@ Return Value: 0 if valid, -1 if invalid
 ******************************************************************************/
 int jpeg_validate_data(unsigned char *jpeg_data, int jpeg_size)
 {
+#if JPEG_LIBRARY_TURBO
+    /* TurboJPEG implementation */
+    tjhandle handle = NULL;
+    int result = -1;
+    
+    /* Check for valid JPEG data */
+    if(jpeg_size < 4) {
+        return -1;
+    }
+    
+    /* Check for JPEG magic bytes */
+    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        return -1;
+    }
+    
+    /* Check for JPEG end marker */
+    if(jpeg_size < 2 || jpeg_data[jpeg_size-2] != 0xFF || jpeg_data[jpeg_size-1] != 0xD9) {
+        return -1;
+    }
+    
+    handle = tjInitDecompress();
+    if (!handle) {
+        return -1;
+    }
+    
+    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, NULL, NULL, NULL, NULL);
+    
+    tjDestroy(handle);
+    return result;
+#else
+    /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     
@@ -401,6 +527,7 @@ int jpeg_validate_data(unsigned char *jpeg_data, int jpeg_size)
     /* Clean up */
     jpeg_destroy_decompress(&cinfo);
     return 0;
+#endif
 }
 
 /******************************************************************************
@@ -411,6 +538,59 @@ Return Value: 0 if ok, -1 on error
 int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scale_factor,
                                unsigned char **gray_data, int *width, int *height)
 {
+#if JPEG_LIBRARY_TURBO
+    /* TurboJPEG implementation */
+    tjhandle handle = NULL;
+    unsigned char *output_data = NULL;
+    int result = -1;
+    
+    /* Check for valid JPEG data */
+    if(jpeg_size < 4) {
+        return -1;
+    }
+    
+    /* Check for JPEG magic bytes */
+    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        return -1;
+    }
+    
+    handle = tjInitDecompress();
+    if (!handle) {
+        return -1;
+    }
+    
+    /* Get dimensions */
+    int orig_width, orig_height;
+    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, &orig_width, &orig_height, NULL, NULL);
+    if (result != 0) {
+        tjDestroy(handle);
+        return -1;
+    }
+    
+    /* Calculate scaled dimensions */
+    *width = orig_width / scale_factor;
+    *height = orig_height / scale_factor;
+    
+    /* Allocate output buffer */
+    output_data = malloc(*width * *height);
+    if (!output_data) {
+        tjDestroy(handle);
+        return -1;
+    }
+    
+    /* Decompress to grayscale with scaling */
+    result = tjDecompress2(handle, jpeg_data, jpeg_size, output_data, *width, 0, *height, TJPF_GRAY, 0);
+    
+    if (result == 0) {
+        *gray_data = output_data;
+    } else {
+        free(output_data);
+    }
+    
+    tjDestroy(handle);
+    return result;
+#else
+    /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     JSAMPROW row_pointer[1];
@@ -477,6 +657,7 @@ int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scal
 
     *gray_data = output_data;
     return 0;
+#endif
 }
 
 /******************************************************************************
@@ -487,6 +668,54 @@ Return Value: 0 if ok, -1 on error
 int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size, 
                            unsigned char **rgb_data, int *width, int *height)
 {
+#if JPEG_LIBRARY_TURBO
+    /* TurboJPEG implementation */
+    tjhandle handle = NULL;
+    unsigned char *output_data = NULL;
+    int result = -1;
+    
+    /* Check for valid JPEG data */
+    if(jpeg_size < 4) {
+        return -1;
+    }
+    
+    /* Check for JPEG magic bytes */
+    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        return -1;
+    }
+    
+    handle = tjInitDecompress();
+    if (!handle) {
+        return -1;
+    }
+    
+    /* Get dimensions */
+    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
+    if (result != 0) {
+        tjDestroy(handle);
+        return -1;
+    }
+    
+    /* Allocate output buffer */
+    output_data = malloc(*width * *height * 3);
+    if (!output_data) {
+        tjDestroy(handle);
+        return -1;
+    }
+    
+    /* Decompress to RGB */
+    result = tjDecompress2(handle, jpeg_data, jpeg_size, output_data, *width, 0, *height, TJPF_RGB, 0);
+    
+    if (result == 0) {
+        *rgb_data = output_data;
+    } else {
+        free(output_data);
+    }
+    
+    tjDestroy(handle);
+    return result;
+#else
+    /* libjpeg implementation */
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     JSAMPROW row_pointer[1];
@@ -549,6 +778,7 @@ int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size,
 
     *rgb_data = output_data;
     return 0;
+#endif
 }
 #endif /* __linux__ */
 
