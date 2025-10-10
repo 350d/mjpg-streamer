@@ -205,7 +205,9 @@ int input_stop(int id)
     DBG("will cancel input thread\n");
     
     /* Set stop flag first */
-    pglobal->stop = 1;
+    if(pglobal) {
+        pglobal->stop = 1;
+    }
     
     /* Give thread a moment to see the stop flag */
     usleep(10000); /* 10ms */
@@ -485,7 +487,7 @@ void *worker_thread(void *arg)
         
         /* Add small delay in ExistingFiles mode to allow stop signal processing */
         if (mode == ExistingFiles) {
-            usleep(10000); /* 10ms delay */
+            usleep(50000); /* 50ms delay - more time for signal processing */
         }
     }
 
