@@ -27,12 +27,15 @@
 #include <stdlib.h>
 #include <dlfcn.h>
 
-/* Try to include TurboJPEG first, fallback to libjpeg */
+/* Always include libjpeg for fallback, and TurboJPEG if available */
+#ifdef __linux__
+    #include <jpeglib.h>
+#endif
+
 #ifdef HAVE_TURBOJPEG
     #include <turbojpeg.h>
     #define JPEG_LIBRARY_TURBO 1
-#elif defined(__linux__)
-    #include <jpeglib.h>
+#else
     #define JPEG_LIBRARY_TURBO 0
 #endif
 
@@ -440,6 +443,7 @@ fallback_libjpeg:
     /* Fallback to libjpeg implementation */
 #endif
 
+#ifdef __linux__
     /* libjpeg implementation (used as fallback or primary) */
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
@@ -465,6 +469,10 @@ fallback_libjpeg:
     jpeg_destroy_decompress(&cinfo);
     
     return 0;
+#else
+    /* No JPEG support on non-Linux systems */
+    return -1;
+#endif
 }
 
 /******************************************************************************
