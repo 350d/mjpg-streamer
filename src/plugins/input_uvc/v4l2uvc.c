@@ -28,6 +28,7 @@
 #include "v4l2uvc.h"
 #include "huffman.h"
 #include "dynctrl.h"
+#include "../../utils.h"
 
 /* SIMD functions are now in utils.c */
 
