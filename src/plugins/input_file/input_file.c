@@ -87,6 +87,8 @@ static int use_static_buffers = 1;
 /*** plugin interface functions ***/
 int input_init(input_parameter *param, int id)
 {
+    printf("input_file: input_init called for id=%d\n", id);
+    
     int i;
     plugin_number = id;
 
@@ -234,6 +236,7 @@ int input_stop(int id)
 
 int input_run(int id)
 {
+    printf("input_file: input_run called for id=%d\n", id);
     pglobal->in[id].buf = NULL;
 
     if (mode == NewFilesOnly) {
@@ -262,11 +265,13 @@ int input_run(int id)
 #endif
     }
 
+    printf("input_file: creating worker thread\n");
     if(pthread_create(&worker, 0, worker_thread, NULL) != 0) {
         free(pglobal->in[id].buf);
         fprintf(stderr, "could not start worker thread\n");
         exit(EXIT_FAILURE);
     }
+    printf("input_file: worker thread created successfully\n");
 
     /* Keep thread joinable for proper cleanup */
 
@@ -291,6 +296,8 @@ void help(void)
 /* the single writer thread */
 void *worker_thread(void *arg)
 {
+    printf("input_file: worker_thread started!\n");
+    
     char buffer[1<<16];
     int file;
     size_t filesize = 0;
