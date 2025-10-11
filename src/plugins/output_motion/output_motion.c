@@ -673,9 +673,10 @@ void *worker_thread(void *arg)
 
         /* Validate JPEG data before analysis */
         if(jpeg_validate_data(current_frame, frame_size) < 0) {
-            DBG("skipping corrupted JPEG frame for motion analysis, frame_size: %d\n", frame_size);
+            LOG("skipping corrupted JPEG frame for motion analysis, frame_size: %d\n", frame_size);
             continue;
         }
+        LOG("JPEG validation passed, frame_size: %d\n", frame_size);
 
         /* Convert current frame to grayscale with integrated scaling */
         // Decode JPEG directly to scaled grayscale data
@@ -683,9 +684,10 @@ void *worker_thread(void *arg)
         int width, height;
         
         if(jpeg_decode_to_gray_scaled(current_frame, frame_size, scale_factor, &gray_data, &width, &height) < 0) {
-            DBG("failed to decode JPEG for motion detection, frame_size: %d\n", frame_size);
+            LOG("failed to decode JPEG for motion detection, frame_size: %d\n", frame_size);
             continue;
         }
+        LOG("JPEG decode successful, gray_data size: %dx%d\n", width, height);
         
         // Use the already scaled dimensions
         scaled_width = width;
