@@ -645,14 +645,18 @@ void *worker_thread(void *arg)
 
         /* Check if we should process this frame */
         if(frame_counter % check_interval != 0) {
+            LOG("Skipping frame %d due to check_interval=%d\n", frame_counter, check_interval);
             continue;
         }
 
         /* Check if JPEG size changed significantly - early optimization */
         if(!is_jpeg_size_changed(frame_size, prev_jpeg_size, size_threshold)) {
-            DBG("JPEG size change below threshold (%d%%), skipping motion analysis\n", size_threshold);
+            LOG("JPEG size change below threshold (%d%%), skipping motion analysis, frame_size=%d, prev_size=%d\n", 
+                size_threshold, frame_size, prev_jpeg_size);
             continue;
         }
+        
+        LOG("Processing motion detection for frame %d, size=%d\n", frame_counter, frame_size);
         
         /* Update previous JPEG size for next comparison */
         prev_jpeg_size = frame_size;
