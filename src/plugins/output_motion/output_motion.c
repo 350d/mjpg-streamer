@@ -638,6 +638,11 @@ void *worker_thread(void *arg)
 
         frame_counter++;
 
+        /* Debug: log every 10th frame to see if we're processing frames */
+        if(frame_counter % 10 == 0) {
+            LOG("Processing frame %d, size=%d\n", frame_counter, frame_size);
+        }
+
         /* Check if we should process this frame */
         if(frame_counter % check_interval != 0) {
             continue;
