@@ -120,7 +120,7 @@ ls plugins/
 # With motion detection
 ./mjpg_streamer -i "./plugins/input_uvc.so -d /dev/video0" \
                 -o "./plugins/output_http.so -p 8080" \
-                -o "./plugins/output_motion.so -s 4 -l 5 -w http://your-webhook-url"
+                -o "./plugins/output_motion.so -s 4 -l 5 --sequence 3 -w http://your-webhook-url"
 
 # Raspberry Pi camera (if available)
 ./mjpg_streamer -i "./plugins/input_raspicam.so" -o "./plugins/output_http.so -p 8080"
@@ -150,14 +150,15 @@ The `output_motion` plugin provides real-time motion detection:
 
 ```bash
 ./mjpg_streamer -i "./plugins/input_uvc.so -d /dev/video0" \
-                -o "./plugins/output_motion.so -s 4 -l 5 -t 0.5 -w http://webhook-url"
+                -o "./plugins/output_motion.so -s 4 -l 5 --sequence 3 -w http://webhook-url"
 ```
 
 ### Parameters
 
 - `-s N`: Scale factor (default: 4) - reduces image size for faster processing
 - `-l N`: Motion level threshold in percentage (default: 5%)
-- `-t N`: Noise threshold in percentage (default: 1%)
+- `-o N`: Overload threshold in percentage (default: 50%) - ignores motion above this level
+- `--sequence N`: Consecutive frames required for motion confirmation (default: 1)
 - `-f PATH`: Save motion frames to directory (optional)
 - `-w URL`: Webhook URL for notifications (optional)
 - `-p`: Use POST method for webhook (default: GET)
@@ -182,7 +183,7 @@ When motion is detected, the plugin can send HTTP notifications:
 # Save motion frames and send webhook notifications
 ./mjpg_streamer -i "./plugins/input_uvc.so -d /dev/video0 -r 1280x720 -f 15" \
                 -o "./plugins/output_http.so -p 8080" \
-                -o "./plugins/output_motion.so -s 4 -l 3 -f /var/motion -w http://alerts.example.com/motion"
+                -o "./plugins/output_motion.so -s 4 -l 3 --sequence 2 -f /var/motion -w http://alerts.example.com/motion"
 ```
 
 ### Raspberry Pi Camera
@@ -191,7 +192,7 @@ When motion is detected, the plugin can send HTTP notifications:
 # High quality stream with motion detection (if raspicam plugin is available)
 ./mjpg_streamer -i "./plugins/input_raspicam.so -r 1920x1080 -f 30" \
                 -o "./plugins/output_http.so -p 8080" \
-                -o "./plugins/output_motion.so -s 2 -l 5 -w http://webhook.example.com"
+                -o "./plugins/output_motion.so -s 2 -l 5 --sequence 3 -w http://webhook.example.com"
 ```
 
 ### File Input

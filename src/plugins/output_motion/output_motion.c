@@ -165,7 +165,7 @@ void help(void)
             " [-l | --motion ]........: motion detection threshold in %% (default: 5%%)\n" \
             " [-o | --overload ]......: overload threshold in %% (default: 50%%)\n" \
             " [-s | --skipframe ].....: check every N frames (default: 1)\n" \
-            " [-q | --sequence ]......: consecutive frames required for motion confirmation (default: 1)\n" \
+            " [    --sequence ]......: consecutive frames required for motion confirmation (default: 1)\n" \
             " [-f | --folder ]........: folder to save motion frames\n" \
             " [-w | --webhook ].......: webhook URL for motion events\n" \
             " [-p | --post ]..........: use POST instead of GET for webhook\n" \
