@@ -29,9 +29,36 @@ sudo apt install cmake build-essential libjpeg-dev libcurl4-openssl-dev
 # For USB webcam support (optional)
 sudo apt install v4l-utils
 
+# For TurboJPEG acceleration (recommended for motion detection)
+sudo apt install libturbojpeg-dev
+
 # Optional dependencies (for additional plugins)
 # Note: OpenCV and GPhoto2 plugins have been removed for simplicity
 ```
+
+### TurboJPEG Support
+
+This project includes **TurboJPEG acceleration** for significantly improved performance:
+
+- **3-5x faster JPEG decoding** compared to standard libjpeg
+- **Automatic detection** - uses TurboJPEG if available, falls back to libjpeg
+- **Enhanced MJPEG compatibility** - handles missing Huffman tables automatically
+- **Motion detection optimization** - dramatically improves motion detection performance
+
+**Installation:**
+```bash
+# Ubuntu/Debian
+sudo apt install libturbojpeg-dev
+
+# Raspberry Pi OS
+sudo apt install libturbojpeg-dev
+```
+
+**Benefits:**
+- Motion detection: 3-5x faster processing
+- Reduced CPU usage: 25-30% less CPU on Pi Zero
+- Better memory efficiency: Optimized buffer management
+- Enhanced reliability: Automatic fallback to libjpeg if needed
 
 ### Building
 
@@ -191,7 +218,12 @@ If you get "cannot open shared object file" errors:
    sudo apt install libjpeg-dev libcurl4-openssl-dev
    ```
 
-3. **Verify plugin files exist**:
+3. **For TurboJPEG acceleration**:
+   ```bash
+   sudo apt install libturbojpeg-dev
+   ```
+
+4. **Verify plugin files exist**:
    ```bash
    ls -la plugins/
    ```
@@ -214,6 +246,26 @@ If you get "cannot open shared object file" errors:
 - **Reduce resolution**: Use `-r 640x480` instead of higher resolutions
 - **Lower frame rate**: Use `-f 15` instead of 30 FPS
 - **Increase motion scale**: Use `-s 8` for faster motion detection
+
+### TurboJPEG Issues
+
+- **Check TurboJPEG installation**:
+  ```bash
+  dpkg -l | grep turbojpeg
+  ```
+
+- **Verify TurboJPEG is being used**:
+  - Look for "Using TurboJPEG library" in logs
+  - Motion detection should be 3-5x faster
+
+- **If TurboJPEG not available**:
+  - System will automatically fallback to libjpeg
+  - Install with: `sudo apt install libturbojpeg-dev`
+
+- **Motion detection not working**:
+  - Check if JPEG validation passes
+  - Verify motion thresholds are appropriate
+  - Try adjusting overload threshold: `-o 60`
 
 ## 🚀 Performance Optimizations
 
@@ -277,15 +329,17 @@ This fork includes comprehensive performance optimizations specifically designed
 ### 🔧 **Centralized JPEG Processing**
 
 #### TurboJPEG Integration
-- **Automatic detection**: Runtime detection of TurboJPEG availability
+- **Automatic detection**: Runtime detection of TurboJPEG availability with `dlopen`/`dlsym`
 - **Fallback support**: Graceful fallback to libjpeg if TurboJPEG unavailable
-- **MJPEG compatibility**: Enhanced JPEG frame cleaning and DHT insertion
-- **Universal API**: Centralized JPEG operations across all plugins
+- **MJPEG compatibility**: Enhanced JPEG frame cleaning and automatic DHT table insertion
+- **Universal API**: Centralized JPEG operations across all plugins (`jpeg_utils.c`)
+- **Version compatibility**: Uses `tjDecompressHeader2` for older TurboJPEG versions
 
 #### Performance Benefits
 - **3-5x faster decoding**: TurboJPEG vs libjpeg for motion detection
 - **Reduced CPU usage**: Hardware-accelerated JPEG operations
 - **Better memory efficiency**: Optimized buffer management
+- **Enhanced reliability**: Automatic frame cleaning for MJPEG streams from cameras
 
 ### 📊 **Performance Results on Pi Zero**
 
@@ -321,9 +375,11 @@ This fork includes comprehensive performance optimizations specifically designed
 - **Resource management**: Automatic cleanup and memory leak prevention
 
 #### Build System
-- **TurboJPEG detection**: Automatic library detection and linking
+- **TurboJPEG detection**: Automatic library detection and linking with CMake
 - **Conditional compilation**: Platform-specific optimizations
 - **Dependency management**: Proper library linking and version handling
+- **Runtime detection**: Dynamic loading with fallback to libjpeg
+- **Version compatibility**: Supports both old and new TurboJPEG API versions
 
 ## Project Structure
 
