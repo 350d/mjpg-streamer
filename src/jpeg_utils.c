@@ -726,8 +726,8 @@ int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scal
     }
     
     /* Get dimensions */
-    int orig_width, orig_height;
-    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, &orig_width, &orig_height, NULL, NULL);
+    int orig_width, orig_height, subsamp;
+    result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, &orig_width, &orig_height, &subsamp);
     if (result != 0) {
         tjDestroy(handle);
         return -1;
@@ -856,7 +856,8 @@ int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size,
     }
     
     /* Get dimensions */
-    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, width, height, NULL, NULL);
+    int subsamp;
+    result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, width, height, &subsamp);
     if (result != 0) {
         tjDestroy(handle);
         return -1;
