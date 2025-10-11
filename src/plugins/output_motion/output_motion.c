@@ -657,9 +657,10 @@ void *worker_thread(void *arg)
             // Get actual width and height from JPEG header (like QR plugin does)
             int width, height;
             if(jpeg_get_dimensions(pglobal->in[input_number].buf, pglobal->in[input_number].size, &width, &height) < 0) {
-                LOG("failed to get JPEG dimensions\n");
+                LOG("failed to get JPEG dimensions, frame_size=%d\n", pglobal->in[input_number].size);
                 continue;
             }
+            LOG("JPEG dimensions: %dx%d, frame_size=%d\n", width, height, pglobal->in[input_number].size);
             
             scaled_width = width / scale_factor;
             scaled_height = height / scale_factor;
@@ -715,6 +716,14 @@ void *worker_thread(void *arg)
 
         /* Calculate motion level */
         motion_level = calculate_motion_level(current_scaled_frame, prev_frame, scaled_width, scaled_height);
+        
+        /* Debug: log motion level every 30 frames */
+        static int debug_counter = 0;
+        if(++debug_counter >= 30) {
+            debug_counter = 0;
+            LOG("Motion level: %.1f%%, threshold: %d%%, overload: %d%%\n", 
+                motion_level, brightness_threshold, overload_threshold);
+        }
 
         /* Check if motion detected and not overloaded */
         if(motion_level > brightness_threshold && motion_level < overload_threshold) {
