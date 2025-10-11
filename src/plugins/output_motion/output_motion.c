@@ -93,6 +93,7 @@ static int scale_factor = 4;           // -d: downscale factor (default 4)
 static int brightness_threshold = 5;   // -l: motion detection threshold in % (default 5%)
 static int overload_threshold = 50;    // -o: overload threshold in % (default 50%)
 static int check_interval = 1;         // -s: skip frame interval (default 1)
+static int sequence_frames = 1;        // -q: sequence frames for confirmation (default 1)
 static char *save_folder = NULL;       // -f: folder to save motion frames
 static char *webhook_url = NULL;       // -w: webhook URL for motion events
 static int webhook_post = 0;           // -p: use POST instead of GET
@@ -102,6 +103,7 @@ static pthread_t worker;
 static globals *pglobal = NULL;
 static int input_number = 0;
 static int frame_counter = 0;
+static int motion_sequence_count = 0;  // Counter for consecutive motion frames
 static unsigned char *prev_frame = NULL;
 static unsigned char *current_frame = NULL;
 static int prev_width = 0, prev_height = 0;
@@ -163,6 +165,7 @@ void help(void)
             " [-l | --motion ]........: motion detection threshold in %% (default: 5%%)\n" \
             " [-o | --overload ]......: overload threshold in %% (default: 50%%)\n" \
             " [-s | --skipframe ].....: check every N frames (default: 1)\n" \
+            " [-q | --sequence ]......: consecutive frames required for motion confirmation (default: 1)\n" \
             " [-f | --folder ]........: folder to save motion frames\n" \
             " [-w | --webhook ].......: webhook URL for motion events\n" \
             " [-p | --post ]..........: use POST instead of GET for webhook\n" \
@@ -712,32 +715,10 @@ void *worker_thread(void *arg)
         /* Calculate motion level */
         motion_level = calculate_motion_level(current_scaled_frame, prev_frame, scaled_width, scaled_height);
 
-        /* Check if motion detected and not overloaded */
-        if(motion_level > brightness_threshold && motion_level < overload_threshold) {
-            time_t now = time(NULL);
-            
-            /* Check cooldown */
-            if(now - last_motion_time >= motion_cooldown) {
-                last_motion_time = now;
-                
-                OPRINT("motion detected! level: %.1f%% (threshold: %d%%)\n", 
-                       motion_level, brightness_threshold);
-                
-                /* Save motion frame if folder specified */
-                if(save_folder != NULL) {
-                    save_motion_frame(current_frame, frame_size, motion_level);
-                }
-                
-                /* Send webhook notification if URL specified */
-                if(webhook_url != NULL) {
-                    send_webhook_notification_async(motion_level);
-                }
-            }
-            /* Always update previous frame to prevent accumulation */
-            /* The issue was that we were not updating prev_frame during motion */
-            simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
-        } else if(motion_level >= overload_threshold) {
-            /* Motion level too high - likely lighting change, ignore */
+        /* Check motion level and handle sequence-based detection */
+        if(motion_level >= overload_threshold) {
+            /* Overload detected - reset sequence counter and ignore */
+            motion_sequence_count = 0;
             time_t now = time(NULL);
             
             /* Check cooldown for overload messages to prevent spam */
@@ -746,9 +727,39 @@ void *worker_thread(void *arg)
                 OPRINT("motion overload detected! level: %.1f%% (overload threshold: %d%%) - ignoring\n", 
                        motion_level, overload_threshold);
             }
-            /* Still update previous frame to prevent accumulation */
+            /* Update previous frame to prevent accumulation */
+            simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
+        } else if(motion_level > brightness_threshold) {
+            /* Motion detected - increment sequence counter */
+            motion_sequence_count++;
+            
+            /* Check if we have enough consecutive motion frames */
+            if(motion_sequence_count >= sequence_frames) {
+                time_t now = time(NULL);
+                
+                /* Check cooldown */
+                if(now - last_motion_time >= motion_cooldown) {
+                    last_motion_time = now;
+                    
+                    OPRINT("motion detected! level: %.1f%% (threshold: %d%%, sequence: %d/%d)\n", 
+                           motion_level, brightness_threshold, motion_sequence_count, sequence_frames);
+                    
+                    /* Save motion frame if folder specified */
+                    if(save_folder != NULL) {
+                        save_motion_frame(current_frame, frame_size, motion_level);
+                    }
+                    
+                    /* Send webhook notification if URL specified */
+                    if(webhook_url != NULL) {
+                        send_webhook_notification_async(motion_level);
+                    }
+                }
+            }
+            /* Update previous frame to prevent accumulation */
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
         } else {
+            /* No motion detected - reset sequence counter */
+            motion_sequence_count = 0;
             /* Update previous frame when no motion detected */
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
         }
@@ -789,6 +800,7 @@ int output_init(output_parameter *param, int id)
             {"motion", required_argument, 0, 0},
             {"overload", required_argument, 0, 0},
             {"skipframe", required_argument, 0, 0},
+            {"sequence", required_argument, 0, 0},
             {"folder", required_argument, 0, 0},
             {"webhook", required_argument, 0, 0},
             {"post", no_argument, 0, 0},
@@ -843,35 +855,40 @@ int output_init(output_parameter *param, int id)
                 check_interval = atoi(optarg);
                 if(check_interval < 1) check_interval = 1;
                 break;
-            /* save folder */
+            /* sequence frames for confirmation */
             case 4:
+                sequence_frames = atoi(optarg);
+                if(sequence_frames < 1) sequence_frames = 1;
+                break;
+            /* save folder */
+            case 5:
                 save_folder = strdup(optarg);
                 break;
             /* webhook URL */
-            case 5:
+            case 6:
                 webhook_url = strdup(optarg);
                 break;
             /* webhook POST method */
-            case 6:
+            case 7:
                 webhook_post = 1;
                 break;
             /* cooldown */
-            case 7:
+            case 8:
                 motion_cooldown = atoi(optarg);
                 if(motion_cooldown < 0) motion_cooldown = 0;
                 break;
             /* input plugin number */
-            case 8:
+            case 9:
                 input_number = atoi(optarg);
                 break;
             /* size threshold */
-            case 9:
+            case 10:
                 size_threshold = atoi(optarg);
                 if(size_threshold < 0) size_threshold = 0;
                 if(size_threshold > 1000) size_threshold = 1000; // 1000 = 100%
                 break;
             /* help */
-            case 10:
+            case 11:
                 help();
                 return 1;
         }
