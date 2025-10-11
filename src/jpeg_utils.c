@@ -646,7 +646,8 @@ int jpeg_validate_data(unsigned char *jpeg_data, int jpeg_size)
         return -1;
     }
     
-    result = tjDecompressHeader3(handle, jpeg_data, jpeg_size, NULL, NULL, NULL, NULL);
+    int width, height, subsamp;
+    result = tjDecompressHeader2(handle, jpeg_data, (unsigned long)jpeg_size, &width, &height, &subsamp);
     
     tjDestroy(handle);
     return (result == 0) ? 0 : -1;
