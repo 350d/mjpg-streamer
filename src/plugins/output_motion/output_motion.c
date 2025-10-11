@@ -638,25 +638,15 @@ void *worker_thread(void *arg)
 
         frame_counter++;
 
-        /* Debug: log every 10th frame to see if we're processing frames */
-        if(frame_counter % 10 == 0) {
-            LOG("Processing frame %d, size=%d\n", frame_counter, frame_size);
-        }
-
         /* Check if we should process this frame */
         if(frame_counter % check_interval != 0) {
-            LOG("Skipping frame %d due to check_interval=%d\n", frame_counter, check_interval);
             continue;
         }
 
         /* Check if JPEG size changed significantly - early optimization */
         if(!is_jpeg_size_changed(frame_size, prev_jpeg_size, size_threshold)) {
-            LOG("JPEG size change below threshold (%d%%), skipping motion analysis, frame_size=%d, prev_size=%d\n", 
-                size_threshold, frame_size, prev_jpeg_size);
             continue;
         }
-        
-        LOG("Processing motion detection for frame %d, size=%d\n", frame_counter, frame_size);
         
         /* Update previous JPEG size for next comparison */
         prev_jpeg_size = frame_size;
@@ -666,10 +656,8 @@ void *worker_thread(void *arg)
             // Get actual width and height from JPEG header (like QR plugin does)
             int width, height;
             if(jpeg_get_dimensions(pglobal->in[input_number].buf, pglobal->in[input_number].size, &width, &height) < 0) {
-                LOG("failed to get JPEG dimensions, frame_size=%d\n", pglobal->in[input_number].size);
                 continue;
             }
-            LOG("JPEG dimensions: %dx%d, frame_size=%d\n", width, height, pglobal->in[input_number].size);
             
             scaled_width = width / scale_factor;
             scaled_height = height / scale_factor;
@@ -682,10 +670,8 @@ void *worker_thread(void *arg)
 
         /* Validate JPEG data before analysis */
         if(jpeg_validate_data(current_frame, frame_size) < 0) {
-            LOG("skipping corrupted JPEG frame for motion analysis, frame_size: %d\n", frame_size);
             continue;
         }
-        LOG("JPEG validation passed, frame_size: %d\n", frame_size);
 
         /* Convert current frame to grayscale with integrated scaling */
         // Decode JPEG directly to scaled grayscale data
@@ -693,10 +679,8 @@ void *worker_thread(void *arg)
         int width, height;
         
         if(jpeg_decode_to_gray_scaled(current_frame, frame_size, scale_factor, &gray_data, &width, &height) < 0) {
-            LOG("failed to decode JPEG for motion detection, frame_size: %d\n", frame_size);
             continue;
         }
-        LOG("JPEG decode successful, gray_data size: %dx%d\n", width, height);
         
         // Use the already scaled dimensions
         scaled_width = width;
@@ -721,29 +705,12 @@ void *worker_thread(void *arg)
                 break;
             }
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
-            LOG("Initialized prev_frame with first frame, size=%dx%d\n", scaled_width, scaled_height);
             free(gray_data);
             continue;
         }
 
         /* Calculate motion level */
         motion_level = calculate_motion_level(current_scaled_frame, prev_frame, scaled_width, scaled_height);
-        
-        /* Debug: log motion level every 30 frames */
-        static int debug_counter = 0;
-        if(++debug_counter >= 30) {
-            debug_counter = 0;
-            LOG("Motion level: %.1f%%, threshold: %d%%, overload: %d%%\n", 
-                motion_level, brightness_threshold, overload_threshold);
-        }
-        
-        /* Debug: log every frame for first 5 frames to see what's happening */
-        static int first_frames = 0;
-        if(first_frames < 5) {
-            first_frames++;
-            LOG("Frame %d: motion_level=%.1f%%, scaled_size=%dx%d\n", 
-                first_frames, motion_level, scaled_width, scaled_height);
-        }
 
         /* Check if motion detected and not overloaded */
         if(motion_level > brightness_threshold && motion_level < overload_threshold) {
