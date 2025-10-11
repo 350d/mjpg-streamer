@@ -710,6 +710,7 @@ void *worker_thread(void *arg)
                 break;
             }
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
+            LOG("Initialized prev_frame with first frame, size=%dx%d\n", scaled_width, scaled_height);
             free(gray_data);
             continue;
         }
@@ -723,6 +724,14 @@ void *worker_thread(void *arg)
             debug_counter = 0;
             LOG("Motion level: %.1f%%, threshold: %d%%, overload: %d%%\n", 
                 motion_level, brightness_threshold, overload_threshold);
+        }
+        
+        /* Debug: log every frame for first 5 frames to see what's happening */
+        static int first_frames = 0;
+        if(first_frames < 5) {
+            first_frames++;
+            LOG("Frame %d: motion_level=%.1f%%, scaled_size=%dx%d\n", 
+                first_frames, motion_level, scaled_width, scaled_height);
         }
 
         /* Check if motion detected and not overloaded */
