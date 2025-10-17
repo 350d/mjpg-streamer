@@ -1083,17 +1083,20 @@ void *worker_thread(void *arg)
 
         /* Initialize scaled frame buffer if needed */
         if(scaled_frame == NULL) {
+            printf("DEBUG: Initializing scaled frame buffer\n");
             // Use global metadata instead of parsing JPEG header
             int width = pglobal->in[input_number].width;
             int height = pglobal->in[input_number].height;
             
             scaled_width = width / scale_factor;
             scaled_height = height / scale_factor;
+            printf("DEBUG: Scaled dimensions: %dx%d (scale_factor=%d)\n", scaled_width, scaled_height, scale_factor);
             scaled_frame = malloc(scaled_width * scaled_height);
             if(scaled_frame == NULL) {
                 LOG("not enough memory for scaled frame\n");
                 break;
             }
+            printf("DEBUG: Scaled frame buffer allocated successfully\n");
         }
 
         /* Use global frame dimensions - no need to parse JPEG header again */
@@ -1105,11 +1108,14 @@ void *worker_thread(void *arg)
         // Universal decoder - handles JPEG, MJPEG, raw RGB, raw YUV
         unsigned char *gray_data = NULL;
         
+        printf("DEBUG: Starting JPEG decode: frame_size=%d, scale_factor=%d\n", frame_size, scale_factor);
         if(decode_any_to_y_component(current_frame, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
+            printf("DEBUG: JPEG decode failed\n");
             /* allow others to access the global buffer again */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
+        printf("DEBUG: JPEG decode successful: %dx%d\n", width, height);
         
         // Use the already scaled dimensions
         scaled_width = width;
