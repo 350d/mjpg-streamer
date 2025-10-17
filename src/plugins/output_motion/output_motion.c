@@ -1020,6 +1020,7 @@ void *worker_thread(void *arg)
         }
         
         /* allocate buffer for frame copy */
+        printf("DEBUG: Allocating buffer for frame_size: %d\n", frame_size);
         if(current_frame == NULL || pglobal->in[input_number].prev_size != frame_size) {
             if(current_frame != NULL) free(current_frame);
             current_frame = malloc(frame_size);
@@ -1028,6 +1029,7 @@ void *worker_thread(void *arg)
                 LOG("not enough memory for frame buffer\n");
                 break;
             }
+            printf("DEBUG: Buffer allocated successfully\n");
         }
         
         /* RELAY SYSTEM: Work directly with global buffer, no copying needed */
@@ -1035,7 +1037,9 @@ void *worker_thread(void *arg)
         unsigned char *frame_data = pglobal->in[input_number].buf;
         
         /* Copy only if we need to save motion frames (for file output) */
+        printf("DEBUG: Checking save_folder: %s\n", save_folder ? "set" : "NULL");
         if(save_folder != NULL) {
+            printf("DEBUG: Copying frame data for saving\n");
             if(current_frame == NULL || pglobal->in[input_number].prev_size != frame_size) {
                 if(current_frame != NULL) free(current_frame);
                 current_frame = malloc(frame_size);
@@ -1046,12 +1050,15 @@ void *worker_thread(void *arg)
                 }
             }
             simd_memcpy(current_frame, frame_data, frame_size);
+            printf("DEBUG: Frame data copied successfully\n");
         }
 
         frame_counter++;
+        printf("DEBUG: Frame counter: %d\n", frame_counter);
 
         /* Check if we should process this frame */
         if(check_interval > 1 && frame_counter % check_interval != 0) {
+            printf("DEBUG: Skipping frame due to check_interval\n");
             /* allow others to access the global buffer again */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             
