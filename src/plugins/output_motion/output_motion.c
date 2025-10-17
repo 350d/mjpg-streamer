@@ -1015,11 +1015,13 @@ void *worker_thread(void *arg)
         /* check if frame size is within reasonable limits */
         if(frame_size == 0) {
             printf("MOTION: frame_size is 0, skipping frame\n");
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
         
         if(frame_size > 10 * 1024 * 1024) { // 10MB limit
             printf("MOTION: frame size too large: %d bytes, skipping\n", frame_size);
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
         
