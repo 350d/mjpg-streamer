@@ -1008,13 +1008,11 @@ void *worker_thread(void *arg)
         
         /* check if frame size is within reasonable limits */
         if(frame_size == 0) {
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
             DBG("frame_size is 0, skipping frame\n");
             continue;
         }
         
         if(frame_size > 10 * 1024 * 1024) { // 10MB limit
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
             DBG("frame size too large: %d bytes, skipping\n", frame_size);
             continue;
         }
@@ -1024,7 +1022,6 @@ void *worker_thread(void *arg)
             if(current_frame != NULL) free(current_frame);
             current_frame = malloc(frame_size);
             if(current_frame == NULL) {
-                pthread_mutex_unlock(&pglobal->in[input_number].db);
                 LOG("not enough memory for frame buffer\n");
                 break;
             }
@@ -1040,7 +1037,6 @@ void *worker_thread(void *arg)
                 if(current_frame != NULL) free(current_frame);
                 current_frame = malloc(frame_size);
                 if(current_frame == NULL) {
-                    pthread_mutex_unlock(&pglobal->in[input_number].db);
                     LOG("not enough memory for frame buffer\n");
                     break;
                 }
@@ -1052,17 +1048,12 @@ void *worker_thread(void *arg)
 
         /* Check if we should process this frame */
         if(check_interval > 1 && frame_counter % check_interval != 0) {
-            /* allow others to access the global buffer again */
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
-            
             /* Don't wait for signal if we're skipping - let others get it */
             continue;
         }
 
         /* Check if JPEG size changed significantly - use global metadata */
         if(!is_jpeg_size_changed(pglobal->in[input_number].current_size, pglobal->in[input_number].prev_size, size_threshold)) {
-            /* allow others to access the global buffer again */
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
 
@@ -1093,8 +1084,6 @@ void *worker_thread(void *arg)
         printf("DEBUG: Starting JPEG decode: frame_size=%d, scale_factor=%d\n", frame_size, scale_factor);
         if(decode_any_to_y_component(current_frame, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
             printf("DEBUG: JPEG decode failed\n");
-            /* allow others to access the global buffer again */
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
         printf("DEBUG: JPEG decode successful: %dx%d\n", width, height);
@@ -1181,9 +1170,6 @@ void *worker_thread(void *arg)
             
             free(gray_data);
             printf("DEBUG: First frame processed, continuing to next frame\n");
-            
-            /* allow others to access the global buffer again */
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
 
