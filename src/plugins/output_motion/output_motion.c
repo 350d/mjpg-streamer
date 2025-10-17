@@ -996,16 +996,17 @@ void *worker_thread(void *arg)
             continue;
         }
         printf("MOTION: Fresh frame received, sequence=%u\n", last_motion_sequence);
-        // ... existing code ...
-
         
-
+        printf("MOTION: Reading frame_size from current_size\n");
         /* read buffer */
         frame_size = pglobal->in[input_number].current_size;
+        printf("MOTION: current_size = %d\n", frame_size);
         
         /* Fallback to size if current_size is 0 */
         if(frame_size == 0) {
+            printf("MOTION: current_size is 0, using size fallback\n");
             frame_size = pglobal->in[input_number].size;
+            printf("MOTION: size fallback = %d\n", frame_size);
         }
         
         /* Simple frame_size monitoring */
@@ -1013,14 +1014,16 @@ void *worker_thread(void *arg)
         
         /* check if frame size is within reasonable limits */
         if(frame_size == 0) {
-            DBG("frame_size is 0, skipping frame\n");
+            printf("MOTION: frame_size is 0, skipping frame\n");
             continue;
         }
         
         if(frame_size > 10 * 1024 * 1024) { // 10MB limit
-            DBG("frame size too large: %d bytes, skipping\n", frame_size);
+            printf("MOTION: frame size too large: %d bytes, skipping\n", frame_size);
             continue;
         }
+        
+        printf("MOTION: Frame size OK, proceeding with processing\n");
         
         /* allocate buffer for frame copy */
         if(current_frame == NULL || pglobal->in[input_number].prev_size != frame_size) {
