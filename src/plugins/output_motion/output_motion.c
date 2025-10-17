@@ -989,10 +989,10 @@ void *worker_thread(void *arg)
         
         /* Check if new frame is available */
         if (!is_new_frame_available(&pglobal->in[input_number], &last_motion_sequence)) {
-            printf("MOTION: No fresh frame, sleeping 1ms\n");
+            printf("MOTION: No fresh frame, sleeping 10ms\n");
             pthread_mutex_unlock(&pglobal->in[input_number].db);
-            /* Add small delay to prevent busy waiting */
-            usleep(1000); /* 1ms delay */
+            /* Add delay to allow input plugin to process frames */
+            usleep(10000); /* 10ms delay */
             continue;
         }
         printf("MOTION: Fresh frame received, sequence=%u\n", last_motion_sequence);
@@ -1016,6 +1016,7 @@ void *worker_thread(void *arg)
         if(frame_size == 0) {
             printf("MOTION: frame_size is 0, skipping frame\n");
             pthread_mutex_unlock(&pglobal->in[input_number].db);
+            usleep(10000); /* 10ms delay to allow input plugin to process */
             continue;
         }
         
