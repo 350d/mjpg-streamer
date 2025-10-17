@@ -1057,6 +1057,8 @@ void *worker_thread(void *arg)
         printf("DEBUG: Frame counter: %d\n", frame_counter);
 
         /* Check if we should process this frame */
+        printf("DEBUG: check_interval=%d, frame_counter=%d, modulo=%d\n", 
+               check_interval, frame_counter, frame_counter % check_interval);
         if(check_interval > 1 && frame_counter % check_interval != 0) {
             printf("DEBUG: Skipping frame due to check_interval\n");
             /* allow others to access the global buffer again */
@@ -1067,11 +1069,17 @@ void *worker_thread(void *arg)
         }
 
         /* Check if JPEG size changed significantly - use global metadata */
+        printf("DEBUG: Checking JPEG size change: current=%d, prev=%d, threshold=%d\n",
+               pglobal->in[input_number].current_size, 
+               pglobal->in[input_number].prev_size, 
+               size_threshold);
         if(!is_jpeg_size_changed(pglobal->in[input_number].current_size, pglobal->in[input_number].prev_size, size_threshold)) {
+            printf("DEBUG: JPEG size not changed significantly, skipping\n");
             /* allow others to access the global buffer again */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
+        printf("DEBUG: JPEG size changed, proceeding with motion detection\n");
 
         /* Initialize scaled frame buffer if needed */
         if(scaled_frame == NULL) {
