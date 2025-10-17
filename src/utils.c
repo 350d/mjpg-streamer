@@ -320,31 +320,20 @@ int calculate_wait_timeout(void *in_ptr, struct timespec *timeout) {
 }
 
 
-/* Wait for a fresh frame; returns 1 with mutex held, 0 on timeout (mutex unlocked) */
+/* Wait for a fresh frame; returns 1 with mutex held, 0 on error (mutex unlocked) */
 int wait_for_fresh_frame(void *in_ptr, unsigned int *last_sequence) {
     if (in_ptr == NULL || last_sequence == NULL) {
         return 0;
     }
     input *in = (input *)in_ptr;
     pthread_mutex_lock(&in->db);
-    if (!is_new_frame_available(in, last_sequence)) {
-        struct timespec timeout;
-        if (calculate_wait_timeout(in, &timeout) != 0) {
-            pthread_mutex_unlock(&in->db);
-            return 0;
-        }
-        int ret = pthread_cond_timedwait(&in->db_update, &in->db, &timeout);
-        if (ret == ETIMEDOUT) {
-            pthread_mutex_unlock(&in->db);
-            return 0;
-        }
-        if (!is_new_frame_available(in, last_sequence)) {
-            pthread_mutex_unlock(&in->db);
-            /* Add small delay to prevent busy waiting */
-            usleep(1000); /* 1ms delay */
-            return 0;
-        }
+    
+    /* Wait until a new frame is available */
+    while (!is_new_frame_available(in, last_sequence)) {
+        /* Use pthread_cond_wait instead of timedwait for efficient waiting */
+        pthread_cond_wait(&in->db_update, &in->db);
     }
+    
     /* mutex remains locked; caller must unlock */
     return 1;
 }
