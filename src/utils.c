@@ -279,6 +279,11 @@ int is_new_frame_available(void *in_ptr, unsigned int *last_sequence) {
         return 0; /* No new frame */
     }
     
+    /* Check if frame is actually ready (has valid size) */
+    if (in->current_size == 0 && in->size == 0) {
+        return 0; /* Frame not ready yet */
+    }
+    
     *last_sequence = current_frame_sequence;
     return 1; /* New frame available */
 }
