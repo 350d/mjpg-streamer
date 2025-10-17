@@ -725,7 +725,6 @@ void *cam_thread(void *arg)
     
 
     while(!pglobal->stop) {
-        printf("INPUT: Main loop iteration\n");
         while(pcontext->videoIn->streamingState == STREAMING_PAUSED) {
             pthread_mutex_lock(&pcontext->pause_mutex);
             pthread_cond_wait(&pcontext->pause_cond, &pcontext->pause_mutex);
@@ -734,7 +733,6 @@ void *cam_thread(void *arg)
 
         /* Use optimized select() with pre-initialized fd_sets */
         int sel = optimized_select_wait(pcontext, timeout);
-        printf("INPUT: select() = %d\n", sel);
         DBG("select() = %d\n", sel);
 
         if (sel < 0) {
@@ -756,15 +754,12 @@ void *cam_thread(void *arg)
         }
 
         if (FD_ISSET(pcontext->videoIn->fd, &pcontext->rd_fds)) {
-            printf("INPUT: Grabbing a frame...\n");
             DBG("Grabbing a frame...\n");
             /* grab a frame */
             if(uvcGrab(pcontext->videoIn) < 0) {
-                printf("INPUT: uvcGrab failed\n");
                 IPRINT("Error grabbing frames\n");
                 goto endloop;
             }
-            printf("INPUT: uvcGrab successful\n");
 
             if ( every_count < every - 1 ) {
                 DBG("dropping %d frame for every=%d\n", every_count + 1, every);
@@ -855,15 +850,12 @@ void *cam_thread(void *arg)
             /* Lock mutex only for final buffer update - minimize lock time */
             pthread_mutex_lock(&pglobal->in[pcontext->id].db);
             
-            printf("INPUT: compressed_size = %d\n", compressed_size);
             if (compressed_size > 0) {
                 /* Update frame metadata */
                 pglobal->in[pcontext->id].prev_size = pglobal->in[pcontext->id].current_size;
                 pglobal->in[pcontext->id].current_size = compressed_size;
                 
                 pglobal->in[pcontext->id].size = compressed_size;
-                printf("INPUT: Updated sizes - current_size=%d, size=%d\n", 
-                       pglobal->in[pcontext->id].current_size, pglobal->in[pcontext->id].size);
                 pglobal->in[pcontext->id].timestamp = pcontext->videoIn->tmptimestamp;
                 pglobal->in[pcontext->id].frame_timestamp_ms = (pcontext->videoIn->tmptimestamp.tv_sec * 1000LL) + (pcontext->videoIn->tmptimestamp.tv_usec / 1000);
                 
@@ -880,7 +872,6 @@ void *cam_thread(void *arg)
                 pthread_mutex_unlock(&pglobal->in[pcontext->id].db);
                 
             } else {
-                printf("INPUT: compressed_size is 0, not updating sizes\n");
                 pthread_mutex_unlock(&pglobal->in[pcontext->id].db);
             }
         }
