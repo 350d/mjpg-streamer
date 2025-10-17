@@ -978,19 +978,15 @@ void *worker_thread(void *arg)
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop) {
-        printf("DEBUG: Motion detection loop iteration\n");
         DBG("waiting for fresh frame\n");
 
         /* Wait for fresh frame using helper */
         static unsigned int last_motion_sequence = UINT_MAX;
-        printf("DEBUG: Waiting for fresh frame, last_sequence=%u\n", last_motion_sequence);
         if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_motion_sequence)) {
-            printf("DEBUG: No fresh frame available, sleeping 1ms\n");
             /* Add small delay to prevent busy waiting */
             usleep(1000); /* 1ms delay */
             continue;
         }
-        printf("DEBUG: Fresh frame received, sequence=%u\n", last_motion_sequence);
         // ... existing code ...
 
         
@@ -1004,11 +1000,7 @@ void *worker_thread(void *arg)
         }
         
         /* Simple frame_size monitoring */
-        printf("frame_size: %d (current_size: %d, size: %d, prev_size: %d)\n", 
-               frame_size, 
-               pglobal->in[input_number].current_size,
-               pglobal->in[input_number].size,
-               pglobal->in[input_number].prev_size);
+        printf("frame_size: %d\n", frame_size);
         
         /* check if frame size is within reasonable limits */
         if(frame_size == 0) {
@@ -1024,7 +1016,6 @@ void *worker_thread(void *arg)
         }
         
         /* allocate buffer for frame copy */
-        printf("DEBUG: Allocating buffer for frame_size: %d\n", frame_size);
         if(current_frame == NULL || pglobal->in[input_number].prev_size != frame_size) {
             if(current_frame != NULL) free(current_frame);
             current_frame = malloc(frame_size);
@@ -1033,7 +1024,6 @@ void *worker_thread(void *arg)
                 LOG("not enough memory for frame buffer\n");
                 break;
             }
-            printf("DEBUG: Buffer allocated successfully\n");
         }
         
         /* RELAY SYSTEM: Work directly with global buffer, no copying needed */
@@ -1041,9 +1031,7 @@ void *worker_thread(void *arg)
         unsigned char *frame_data = pglobal->in[input_number].buf;
         
         /* Copy only if we need to save motion frames (for file output) */
-        printf("DEBUG: Checking save_folder: %s\n", save_folder ? "set" : "NULL");
         if(save_folder != NULL) {
-            printf("DEBUG: Copying frame data for saving\n");
             if(current_frame == NULL || pglobal->in[input_number].prev_size != frame_size) {
                 if(current_frame != NULL) free(current_frame);
                 current_frame = malloc(frame_size);
@@ -1054,17 +1042,12 @@ void *worker_thread(void *arg)
                 }
             }
             simd_memcpy(current_frame, frame_data, frame_size);
-            printf("DEBUG: Frame data copied successfully\n");
         }
 
         frame_counter++;
-        printf("DEBUG: Frame counter: %d\n", frame_counter);
 
         /* Check if we should process this frame */
-        printf("DEBUG: check_interval=%d, frame_counter=%d, modulo=%d\n", 
-               check_interval, frame_counter, frame_counter % check_interval);
         if(check_interval > 1 && frame_counter % check_interval != 0) {
-            printf("DEBUG: Skipping frame due to check_interval\n");
             /* allow others to access the global buffer again */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             
@@ -1073,34 +1056,25 @@ void *worker_thread(void *arg)
         }
 
         /* Check if JPEG size changed significantly - use global metadata */
-        printf("DEBUG: Checking JPEG size change: current=%d, prev=%d, threshold=%d\n",
-               pglobal->in[input_number].current_size, 
-               pglobal->in[input_number].prev_size, 
-               size_threshold);
         if(!is_jpeg_size_changed(pglobal->in[input_number].current_size, pglobal->in[input_number].prev_size, size_threshold)) {
-            printf("DEBUG: JPEG size not changed significantly, skipping\n");
             /* allow others to access the global buffer again */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
-        printf("DEBUG: JPEG size changed, proceeding with motion detection\n");
 
         /* Initialize scaled frame buffer if needed */
         if(scaled_frame == NULL) {
-            printf("DEBUG: Initializing scaled frame buffer\n");
             // Use global metadata instead of parsing JPEG header
             int width = pglobal->in[input_number].width;
             int height = pglobal->in[input_number].height;
             
             scaled_width = width / scale_factor;
             scaled_height = height / scale_factor;
-            printf("DEBUG: Scaled dimensions: %dx%d (scale_factor=%d)\n", scaled_width, scaled_height, scale_factor);
             scaled_frame = malloc(scaled_width * scaled_height);
             if(scaled_frame == NULL) {
                 LOG("not enough memory for scaled frame\n");
                 break;
             }
-            printf("DEBUG: Scaled frame buffer allocated successfully\n");
         }
 
         /* Use global frame dimensions - no need to parse JPEG header again */
