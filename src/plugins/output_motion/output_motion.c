@@ -1159,9 +1159,12 @@ void *worker_thread(void *arg)
                 printf("DEBUG: Blur filter failed\n");
             }
         }
+        
+        printf("DEBUG: Blur filter completed, checking auto levels\n");
 
         /* Apply auto levels if enabled */
         if(enable_autolevels) {
+            printf("DEBUG: Auto levels enabled, applying\n");
             // Initialize auto levels buffer if needed
             if(autolevels_buffer == NULL) {
                 autolevels_buffer = malloc(scaled_width * scaled_height);
@@ -1180,13 +1183,16 @@ void *worker_thread(void *arg)
 
 
         /* Initialize previous frame if this is the first frame */
+        printf("DEBUG: Checking previous frame initialization\n");
         if(prev_frame == NULL) {
+            printf("DEBUG: Allocating previous frame buffer\n");
             prev_frame = malloc(scaled_width * scaled_height);
             if(prev_frame == NULL) {
                 LOG("not enough memory for previous frame\n");
                 free(gray_data);
                 break;
             }
+            printf("DEBUG: Previous frame buffer allocated successfully\n");
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
             
             free(gray_data);
