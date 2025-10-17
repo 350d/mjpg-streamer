@@ -981,11 +981,16 @@ void *worker_thread(void *arg)
         printf("MOTION: Waiting for fresh frame\n");
         DBG("waiting for fresh frame\n");
 
-        /* Wait for fresh frame using helper */
+        /* Lock mutex and check for fresh frame */
+        pthread_mutex_lock(&pglobal->in[input_number].db);
+        
         static unsigned int last_motion_sequence = UINT_MAX;
         printf("MOTION: last_sequence=%u\n", last_motion_sequence);
-        if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_motion_sequence)) {
+        
+        /* Check if new frame is available */
+        if (!is_new_frame_available(&pglobal->in[input_number], &last_motion_sequence)) {
             printf("MOTION: No fresh frame, sleeping 1ms\n");
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             /* Add small delay to prevent busy waiting */
             usleep(1000); /* 1ms delay */
             continue;
