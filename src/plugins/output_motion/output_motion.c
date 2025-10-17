@@ -978,15 +978,19 @@ void *worker_thread(void *arg)
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop) {
+        printf("MOTION: Waiting for fresh frame\n");
         DBG("waiting for fresh frame\n");
 
         /* Wait for fresh frame using helper */
         static unsigned int last_motion_sequence = UINT_MAX;
+        printf("MOTION: last_sequence=%u\n", last_motion_sequence);
         if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_motion_sequence)) {
+            printf("MOTION: No fresh frame, sleeping 1ms\n");
             /* Add small delay to prevent busy waiting */
             usleep(1000); /* 1ms delay */
             continue;
         }
+        printf("MOTION: Fresh frame received, sequence=%u\n", last_motion_sequence);
         // ... existing code ...
 
         
@@ -1000,7 +1004,7 @@ void *worker_thread(void *arg)
         }
         
         /* Simple frame_size monitoring */
-        // printf("frame_size: %d\n", frame_size);
+        printf("frame_size: %d\n", frame_size);
         
         /* check if frame size is within reasonable limits */
         if(frame_size == 0) {
@@ -1086,15 +1090,20 @@ void *worker_thread(void *arg)
         // Universal decoder - handles JPEG, MJPEG, raw RGB, raw YUV
         unsigned char *gray_data = NULL;
         
+        printf("DEBUG: Starting JPEG decode: frame_size=%d, scale_factor=%d\n", frame_size, scale_factor);
         if(decode_any_to_y_component(current_frame, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
+            printf("DEBUG: JPEG decode failed\n");
             /* allow others to access the global buffer again */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
+        printf("DEBUG: JPEG decode successful: %dx%d\n", width, height);
         
         // Use the already scaled dimensions
         scaled_width = width;
         scaled_height = height;
+        
+        printf("DEBUG: Setting scaled dimensions: %dx%d\n", scaled_width, scaled_height);
         
         // Update dimensions tracking
         if(prev_width != scaled_width || prev_height != scaled_height) {
@@ -1105,27 +1114,39 @@ void *worker_thread(void *arg)
         // Use gray_data directly instead of copying - avoid unnecessary memcpy
         // This eliminates one memory copy operation per frame
         unsigned char *current_scaled_frame = gray_data;
+        
+        printf("DEBUG: Setting current_scaled_frame pointer\n");
 
         /* Apply blur filter if enabled */
         if(enable_blur) {
+            printf("DEBUG: Applying blur filter\n");
             // Initialize blur buffer if needed
             if(blur_buffer == NULL) {
+                printf("DEBUG: Allocating blur buffer\n");
                 blur_buffer = malloc(scaled_width * scaled_height);
                 if(blur_buffer == NULL) {
                     LOG("not enough memory for blur buffer\n");
                     free(gray_data);
                     break;
                 }
+                printf("DEBUG: Blur buffer allocated successfully\n");
             }
             
             // Apply 3x3 blur filter
+            printf("DEBUG: Applying 3x3 blur filter\n");
             if(apply_fast_blur_3x3(current_scaled_frame, blur_buffer, scaled_width, scaled_height) == 0) {
                 current_scaled_frame = blur_buffer; // Use blurred frame for motion detection
+                printf("DEBUG: Blur filter applied successfully\n");
+            } else {
+                printf("DEBUG: Blur filter failed\n");
             }
         }
+        
+        printf("DEBUG: Blur filter completed, checking auto levels\n");
 
         /* Apply auto levels if enabled */
         if(enable_autolevels) {
+            printf("DEBUG: Auto levels enabled, applying\n");
             // Initialize auto levels buffer if needed
             if(autolevels_buffer == NULL) {
                 autolevels_buffer = malloc(scaled_width * scaled_height);
@@ -1142,17 +1163,24 @@ void *worker_thread(void *arg)
             }
         }
 
+
         /* Initialize previous frame if this is the first frame */
+        printf("DEBUG: Checking previous frame initialization\n");
         if(prev_frame == NULL) {
+            printf("DEBUG: Allocating previous frame buffer\n");
             prev_frame = malloc(scaled_width * scaled_height);
             if(prev_frame == NULL) {
                 LOG("not enough memory for previous frame\n");
                 free(gray_data);
                 break;
             }
+            printf("DEBUG: Previous frame buffer allocated successfully\n");
+            printf("DEBUG: Copying current frame to previous frame buffer\n");
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
+            printf("DEBUG: Frame copied successfully, freeing gray_data and continuing\n");
             
             free(gray_data);
+            printf("DEBUG: First frame processed, continuing to next frame\n");
             continue;
         }
 
