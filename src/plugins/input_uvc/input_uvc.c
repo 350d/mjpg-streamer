@@ -725,6 +725,7 @@ void *cam_thread(void *arg)
     
 
     while(!pglobal->stop) {
+        printf("INPUT: Main loop iteration\n");
         while(pcontext->videoIn->streamingState == STREAMING_PAUSED) {
             pthread_mutex_lock(&pcontext->pause_mutex);
             pthread_cond_wait(&pcontext->pause_cond, &pcontext->pause_mutex);
@@ -733,6 +734,7 @@ void *cam_thread(void *arg)
 
         /* Use optimized select() with pre-initialized fd_sets */
         int sel = optimized_select_wait(pcontext, timeout);
+        printf("INPUT: select() = %d\n", sel);
         DBG("select() = %d\n", sel);
 
         if (sel < 0) {
@@ -754,12 +756,15 @@ void *cam_thread(void *arg)
         }
 
         if (FD_ISSET(pcontext->videoIn->fd, &pcontext->rd_fds)) {
+            printf("INPUT: Grabbing a frame...\n");
             DBG("Grabbing a frame...\n");
             /* grab a frame */
             if(uvcGrab(pcontext->videoIn) < 0) {
+                printf("INPUT: uvcGrab failed\n");
                 IPRINT("Error grabbing frames\n");
                 goto endloop;
             }
+            printf("INPUT: uvcGrab successful\n");
 
             if ( every_count < every - 1 ) {
                 DBG("dropping %d frame for every=%d\n", every_count + 1, every);
