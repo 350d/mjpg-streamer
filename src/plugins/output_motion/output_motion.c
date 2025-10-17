@@ -1053,11 +1053,13 @@ void *worker_thread(void *arg)
         /* Check if we should process this frame */
         if(check_interval > 1 && frame_counter % check_interval != 0) {
             /* Don't wait for signal if we're skipping - let others get it */
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
 
         /* Check if JPEG size changed significantly - use global metadata */
         if(!is_jpeg_size_changed(pglobal->in[input_number].current_size, pglobal->in[input_number].prev_size, size_threshold)) {
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
 
@@ -1088,6 +1090,7 @@ void *worker_thread(void *arg)
         printf("DEBUG: Starting JPEG decode: frame_size=%d, scale_factor=%d\n", frame_size, scale_factor);
         if(decode_any_to_y_component(current_frame, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
             printf("DEBUG: JPEG decode failed\n");
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
         printf("DEBUG: JPEG decode successful: %dx%d\n", width, height);
