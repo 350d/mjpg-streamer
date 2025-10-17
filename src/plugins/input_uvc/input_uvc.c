@@ -862,6 +862,8 @@ void *cam_thread(void *arg)
                 /* Increment frame sequence for multi-consumer detection */
                 pglobal->in[pcontext->id].frame_sequence++;
                 
+                printf("INPUT: Frame %u generated, size=%d\n", pglobal->in[pcontext->id].frame_sequence, compressed_size);
+                
                 
                 
                 /* signal fresh_frame */
@@ -871,6 +873,7 @@ void *cam_thread(void *arg)
                 pthread_mutex_unlock(&pglobal->in[pcontext->id].db);
                 
             } else {
+                printf("INPUT: compressed_size=0, skipping frame\n");
                 pthread_mutex_unlock(&pglobal->in[pcontext->id].db);
             }
         }
