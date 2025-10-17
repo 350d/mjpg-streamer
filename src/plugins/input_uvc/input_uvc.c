@@ -861,7 +861,6 @@ void *cam_thread(void *arg)
                 
                 /* Increment frame sequence for multi-consumer detection */
                 pglobal->in[pcontext->id].frame_sequence++;
-                printf("INPUT: Frame %u generated, size=%d\n", pglobal->in[pcontext->id].frame_sequence, compressed_size);
                 
                 
                 
