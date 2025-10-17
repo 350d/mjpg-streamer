@@ -1121,6 +1121,8 @@ void *worker_thread(void *arg)
         scaled_width = width;
         scaled_height = height;
         
+        printf("DEBUG: Setting scaled dimensions: %dx%d\n", scaled_width, scaled_height);
+        
         // Update dimensions tracking
         if(prev_width != scaled_width || prev_height != scaled_height) {
             prev_width = scaled_width;
@@ -1130,22 +1132,31 @@ void *worker_thread(void *arg)
         // Use gray_data directly instead of copying - avoid unnecessary memcpy
         // This eliminates one memory copy operation per frame
         unsigned char *current_scaled_frame = gray_data;
+        
+        printf("DEBUG: Setting current_scaled_frame pointer\n");
 
         /* Apply blur filter if enabled */
         if(enable_blur) {
+            printf("DEBUG: Applying blur filter\n");
             // Initialize blur buffer if needed
             if(blur_buffer == NULL) {
+                printf("DEBUG: Allocating blur buffer\n");
                 blur_buffer = malloc(scaled_width * scaled_height);
                 if(blur_buffer == NULL) {
                     LOG("not enough memory for blur buffer\n");
                     free(gray_data);
                     break;
                 }
+                printf("DEBUG: Blur buffer allocated successfully\n");
             }
             
             // Apply 3x3 blur filter
+            printf("DEBUG: Applying 3x3 blur filter\n");
             if(apply_fast_blur_3x3(current_scaled_frame, blur_buffer, scaled_width, scaled_height) == 0) {
                 current_scaled_frame = blur_buffer; // Use blurred frame for motion detection
+                printf("DEBUG: Blur filter applied successfully\n");
+            } else {
+                printf("DEBUG: Blur filter failed\n");
             }
         }
 
