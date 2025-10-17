@@ -756,12 +756,16 @@ void *cam_thread(void *arg)
         }
 
         if (FD_ISSET(pcontext->videoIn->fd, &pcontext->rd_fds)) {
+            printf("INPUT: Grabbing a frame...\n");
             DBG("Grabbing a frame...\n");
             /* grab a frame */
+            printf("INPUT: Calling uvcGrab...\n");
             if(uvcGrab(pcontext->videoIn) < 0) {
+                printf("INPUT: uvcGrab failed\n");
                 IPRINT("Error grabbing frames\n");
                 goto endloop;
             }
+            printf("INPUT: uvcGrab successful\n");
 
             if ( every_count < every - 1 ) {
                 DBG("dropping %d frame for every=%d\n", every_count + 1, every);
