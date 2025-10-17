@@ -850,12 +850,15 @@ void *cam_thread(void *arg)
             /* Lock mutex only for final buffer update - minimize lock time */
             pthread_mutex_lock(&pglobal->in[pcontext->id].db);
             
+            printf("INPUT: compressed_size = %d\n", compressed_size);
             if (compressed_size > 0) {
                 /* Update frame metadata */
                 pglobal->in[pcontext->id].prev_size = pglobal->in[pcontext->id].current_size;
                 pglobal->in[pcontext->id].current_size = compressed_size;
                 
                 pglobal->in[pcontext->id].size = compressed_size;
+                printf("INPUT: Updated sizes - current_size=%d, size=%d\n", 
+                       pglobal->in[pcontext->id].current_size, pglobal->in[pcontext->id].size);
                 pglobal->in[pcontext->id].timestamp = pcontext->videoIn->tmptimestamp;
                 pglobal->in[pcontext->id].frame_timestamp_ms = (pcontext->videoIn->tmptimestamp.tv_sec * 1000LL) + (pcontext->videoIn->tmptimestamp.tv_usec / 1000);
                 
@@ -872,6 +875,7 @@ void *cam_thread(void *arg)
                 pthread_mutex_unlock(&pglobal->in[pcontext->id].db);
                 
             } else {
+                printf("INPUT: compressed_size is 0, not updating sizes\n");
                 pthread_mutex_unlock(&pglobal->in[pcontext->id].db);
             }
         }
