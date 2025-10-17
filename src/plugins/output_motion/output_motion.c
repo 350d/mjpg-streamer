@@ -987,6 +987,12 @@ void *worker_thread(void *arg)
             usleep(1000); /* 1ms delay */
             continue;
         }
+        
+        /* Additional check: ensure current_size is set */
+        if (pglobal->in[input_number].current_size == 0) {
+            DBG("current_size is 0 after wait_for_fresh_frame, skipping\n");
+            continue;
+        }
         // ... existing code ...
 
         
@@ -995,7 +1001,10 @@ void *worker_thread(void *arg)
         frame_size = pglobal->in[input_number].current_size;
         
         /* Simple frame_size monitoring */
-        printf("frame_size: %d\n", frame_size);
+        printf("frame_size: %d (current_size: %d, prev_size: %d)\n", 
+               frame_size, 
+               pglobal->in[input_number].current_size, 
+               pglobal->in[input_number].prev_size);
         
         /* check if frame size is within reasonable limits */
         if(frame_size == 0) {
