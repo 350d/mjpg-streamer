@@ -725,6 +725,7 @@ void *cam_thread(void *arg)
     
 
     while(!pglobal->stop) {
+        printf("INPUT: Main loop iteration\n");
         while(pcontext->videoIn->streamingState == STREAMING_PAUSED) {
             pthread_mutex_lock(&pcontext->pause_mutex);
             pthread_cond_wait(&pcontext->pause_cond, &pcontext->pause_mutex);
@@ -861,6 +862,7 @@ void *cam_thread(void *arg)
                 
                 /* Increment frame sequence for multi-consumer detection */
                 pglobal->in[pcontext->id].frame_sequence++;
+                printf("INPUT: Frame %u generated, size=%d\n", pglobal->in[pcontext->id].frame_sequence, compressed_size);
                 
                 
                 
