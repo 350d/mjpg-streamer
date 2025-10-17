@@ -1130,9 +1130,15 @@ int uvcGrab(struct vdIn *vd)
                     vd->tmptimestamp = vd->buf.timestamp;
                     vd->direct_copy_used = 1; /* Mark as directly copied */
                     
+                    /* Update frame metadata for direct copy path */
+                    pcontext->pglobal->in[pcontext->id].prev_size = pcontext->pglobal->in[pcontext->id].current_size;
+                    pcontext->pglobal->in[pcontext->id].current_size = copied_size;
+                    pcontext->pglobal->in[pcontext->id].size = copied_size;
+                    pcontext->pglobal->in[pcontext->id].timestamp = vd->buf.timestamp;
+                    pcontext->pglobal->in[pcontext->id].frame_timestamp_ms = (vd->buf.timestamp.tv_sec * 1000LL) + (vd->buf.timestamp.tv_usec / 1000);
+                    pcontext->pglobal->in[pcontext->id].frame_sequence++;
                     
                     /* Signal fresh frame */
-                
                     pthread_cond_broadcast(&pcontext->pglobal->in[pcontext->id].db_update);
                     
                     /* Unlock mutex before waiting for output plugins */
