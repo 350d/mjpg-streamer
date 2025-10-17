@@ -998,6 +998,12 @@ void *worker_thread(void *arg)
         printf("frame_size: %d\n", frame_size);
         
         /* check if frame size is within reasonable limits */
+        if(frame_size == 0) {
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
+            DBG("frame_size is 0, skipping frame\n");
+            continue;
+        }
+        
         if(frame_size > 10 * 1024 * 1024) { // 10MB limit
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             DBG("frame size too large: %d bytes, skipping\n", frame_size);
