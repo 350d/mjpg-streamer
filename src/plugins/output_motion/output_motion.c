@@ -997,14 +997,6 @@ void *worker_thread(void *arg)
         }
         printf("MOTION: Fresh frame received, sequence=%u\n", last_motion_sequence);
         
-        /* Check if frame is actually ready (has valid size) */
-        if (pglobal->in[input_number].current_size == 0 && pglobal->in[input_number].size == 0) {
-            printf("MOTION: Frame has no size data, waiting for input plugin to process\n");
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
-            usleep(1000);
-            continue;
-        }
-        
         printf("MOTION: Reading frame_size from current_size\n");
         /* read buffer */
         frame_size = pglobal->in[input_number].current_size;

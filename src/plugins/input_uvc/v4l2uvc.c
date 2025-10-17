@@ -1125,15 +1125,7 @@ int uvcGrab(struct vdIn *vd)
                 
                 
                 if (copied_size > 0) {
-                    
-                    /* Success - set size and timestamp */
-                    pcontext->pglobal->in[pcontext->id].prev_size = pcontext->pglobal->in[pcontext->id].current_size;
-                    pcontext->pglobal->in[pcontext->id].current_size = copied_size;
-                    pcontext->pglobal->in[pcontext->id].size = copied_size;
-                    pcontext->pglobal->in[pcontext->id].timestamp = vd->buf.timestamp;
-                    /* Update global frame timestamp in ms and increment sequence for multi-consumer */
-                    pcontext->pglobal->in[pcontext->id].frame_timestamp_ms = (vd->buf.timestamp.tv_sec * 1000LL) + (vd->buf.timestamp.tv_usec / 1000);
-                    pcontext->pglobal->in[pcontext->id].frame_sequence++;
+                    /* Success - prepare data for main processing */
                     vd->tmpbytesused = copied_size;
                     vd->tmptimestamp = vd->buf.timestamp;
                     vd->direct_copy_used = 1; /* Mark as directly copied */
