@@ -725,6 +725,7 @@ void *cam_thread(void *arg)
     
 
     while(!pglobal->stop) {
+        printf("INPUT: Main loop iteration\n");
         while(pcontext->videoIn->streamingState == STREAMING_PAUSED) {
             pthread_mutex_lock(&pcontext->pause_mutex);
             pthread_cond_wait(&pcontext->pause_cond, &pcontext->pause_mutex);
@@ -733,6 +734,7 @@ void *cam_thread(void *arg)
 
         /* Use optimized select() with pre-initialized fd_sets */
         int sel = optimized_select_wait(pcontext, timeout);
+        printf("INPUT: select() = %d\n", sel);
         DBG("select() = %d\n", sel);
 
         if (sel < 0) {
