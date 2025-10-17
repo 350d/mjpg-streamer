@@ -994,6 +994,9 @@ void *worker_thread(void *arg)
         /* read buffer */
         frame_size = pglobal->in[input_number].current_size;
         
+        /* Simple frame_size monitoring */
+        printf("frame_size: %d\n", frame_size);
+        
         /* check if frame size is within reasonable limits */
         if(frame_size > 10 * 1024 * 1024) { // 10MB limit
             pthread_mutex_unlock(&pglobal->in[input_number].db);
