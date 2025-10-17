@@ -1193,9 +1193,12 @@ void *worker_thread(void *arg)
                 break;
             }
             printf("DEBUG: Previous frame buffer allocated successfully\n");
+            printf("DEBUG: Copying current frame to previous frame buffer\n");
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
+            printf("DEBUG: Frame copied successfully, freeing gray_data and continuing\n");
             
             free(gray_data);
+            printf("DEBUG: First frame processed, continuing to next frame\n");
             continue;
         }
 
