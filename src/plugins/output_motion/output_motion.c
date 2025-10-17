@@ -978,15 +978,19 @@ void *worker_thread(void *arg)
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop) {
+        printf("DEBUG: Motion detection loop iteration\n");
         DBG("waiting for fresh frame\n");
 
         /* Wait for fresh frame using helper */
         static unsigned int last_motion_sequence = UINT_MAX;
+        printf("DEBUG: Waiting for fresh frame, last_sequence=%u\n", last_motion_sequence);
         if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_motion_sequence)) {
+            printf("DEBUG: No fresh frame available, sleeping 1ms\n");
             /* Add small delay to prevent busy waiting */
             usleep(1000); /* 1ms delay */
             continue;
         }
+        printf("DEBUG: Fresh frame received, sequence=%u\n", last_motion_sequence);
         // ... existing code ...
 
         
