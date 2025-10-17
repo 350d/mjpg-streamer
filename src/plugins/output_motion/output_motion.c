@@ -1181,6 +1181,9 @@ void *worker_thread(void *arg)
             
             free(gray_data);
             printf("DEBUG: First frame processed, continuing to next frame\n");
+            
+            /* allow others to access the global buffer again */
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
             continue;
         }
 
