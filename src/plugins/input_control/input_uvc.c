@@ -31,7 +31,6 @@
 #include <linux/videodev.h>
 #include <sys/ioctl.h>
 #include <errno.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -198,7 +197,7 @@ Description.: Stops the execution of worker thread
 Input Value.: -
 Return Value: always 0
 ******************************************************************************/
-int input_stop(void)
+int input_stop(int id)
 {
     DBG("will cancel input thread\n");
     pthread_cancel(cam);
@@ -211,7 +210,7 @@ Description.: spins of a worker thread
 Input Value.: -
 Return Value: always 0
 ******************************************************************************/
-int input_run(void)
+int input_run(int id)
 {
 
     pthread_create(&cam, 0, cam_thread, NULL);
@@ -429,7 +428,7 @@ void *cam_thread(void *arg)
     while(!pglobal->stop) {
 
         sleep(1);
-        pthread_cond_broadcast(&pglobal->db_update);  //this keeps the output stream alive
+        pthread_cond_broadcast(&pglobal->in[0].db_update);  //this keeps the output stream alive
         DBG("spin loop\n");
     }
 
