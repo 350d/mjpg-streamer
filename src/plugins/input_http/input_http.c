@@ -26,7 +26,6 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <errno.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -34,6 +33,7 @@
 #include <getopt.h>
 #include <pthread.h>
 #include <syslog.h>
+#include <sys/time.h>
 
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
@@ -110,6 +110,13 @@ Return Value: 0
 ******************************************************************************/
 int input_run(int id)
 {
+    plugin_number = id; // Set plugin number for callback
+    
+    // Initialize frame metadata
+    pglobal->in[id].current_size = 0;
+    pglobal->in[id].prev_size = 0;
+    pglobal->in[id].frame_sequence = 0;
+    
     // OPTIMIZATION: Allocate smaller initial buffer
     // Will be reallocated if needed, but starts smaller
     pglobal->in[id].buf = malloc(128 * 1024); // Reduced from 256KB to 128KB
@@ -133,8 +140,19 @@ void on_image_received(char * data, int length){
         /* copy JPG picture to global buffer */
         pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
+        /* Update frame metadata */
+        pglobal->in[plugin_number].prev_size = pglobal->in[plugin_number].current_size;
+        pglobal->in[plugin_number].current_size = length;
         pglobal->in[plugin_number].size = length;
-        memcpy(pglobal->in[plugin_number].buf, data, pglobal->in[plugin_number].size);
+        pglobal->in[plugin_number].frame_sequence++;
+        
+        /* Set timestamp */
+        struct timeval timestamp;
+        gettimeofday(&timestamp, NULL);
+        pglobal->in[plugin_number].timestamp = timestamp;
+        pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
+
+        memcpy(pglobal->in[plugin_number].buf, data, length);
 
         /* signal fresh_frame */
         pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
