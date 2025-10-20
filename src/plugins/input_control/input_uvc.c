@@ -56,6 +56,7 @@ pthread_t cam;
 pthread_mutex_t controls_mutex;
 input_uvc *this;
 static globals *pglobal;
+static int plugin_id = 0;
 
 void *cam_thread(void *);
 void cam_cleanup(void *);
@@ -76,6 +77,9 @@ int input_init(input_parameter *param, int id)
 {
     int i;
     char *dev = "/dev/video0";
+    
+    /* store plugin ID */
+    plugin_id = id;
 
     /* initialize the mutes variable */
     if(pthread_mutex_init(&controls_mutex, NULL) != 0) {
@@ -428,7 +432,7 @@ void *cam_thread(void *arg)
     while(!pglobal->stop) {
 
         sleep(1);
-        pthread_cond_broadcast(&pglobal->in[0].db_update);  //this keeps the output stream alive
+        pthread_cond_broadcast(&pglobal->in[plugin_id].db_update);  //this keeps the output stream alive
         DBG("spin loop\n");
     }
 
