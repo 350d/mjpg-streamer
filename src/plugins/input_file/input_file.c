@@ -208,6 +208,11 @@ int input_stop(int id)
 
 int input_run(int id)
 {
+    // Initialize frame metadata
+    pglobal->in[id].current_size = 0;
+    pglobal->in[id].prev_size = 0;
+    pglobal->in[id].frame_sequence = 0;
+    
     pglobal->in[id].buf = NULL;
 
     if (mode == NewFilesOnly) {
@@ -418,10 +423,16 @@ void *worker_thread(void *arg)
             break;
         }
         
+        // Update frame metadata BEFORE signaling
+        pglobal->in[plugin_number].prev_size = pglobal->in[plugin_number].current_size;
+        pglobal->in[plugin_number].current_size = bytes_read;
         pglobal->in[plugin_number].size = bytes_read;
+        pglobal->in[plugin_number].frame_sequence++;
 
         gettimeofday(&timestamp, NULL);
         pglobal->in[plugin_number].timestamp = timestamp;
+        pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
+        
         DBG("new frame copied (size: %d)\n", pglobal->in[plugin_number].size);
         /* signal fresh_frame */
         pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
