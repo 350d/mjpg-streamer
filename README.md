@@ -223,6 +223,44 @@ make -j1
 - **Reduced false positives**: Focus on important areas only
 - **Configurable layouts**: 2x2, 3x3, or 4x4 zone grids
 
+## ⏱️ Timestamp Support
+
+### HTTP Timestamp Headers
+
+The `-timestamp` option adds `X-Timestamp` headers to HTTP responses:
+
+```bash
+# Enable timestamp headers
+./mjpg_streamer -i "./plugins/input_uvc.so -timestamp" \
+                -o "./plugins/output_http.so -p 8080"
+```
+
+**HTTP Response Headers:**
+```
+Content-Type: image/jpeg
+Content-Length: 12345
+X-Timestamp: 1234567890.123456
+```
+
+### FFmpeg Compatibility
+
+⚠️ **Important**: FFmpeg does **NOT** read HTTP headers when processing MJPEG streams. The `X-Timestamp` headers are ignored by FFmpeg.
+
+**For FFmpeg compatibility, use RTSP instead:**
+```bash
+# RTSP with proper timestamp support
+./mjpg_streamer -i "./plugins/input_uvc.so -timestamp" \
+                -o "./plugins/output_rtsp.so"
+
+# FFmpeg can read RTSP timestamps
+ffmpeg -i rtsp://localhost:8554/stream -f mp4 output.mp4
+```
+
+**Alternative solutions:**
+- Use external timestamp synchronization tools
+- Embed timestamps in JPEG metadata (requires code modification)
+- Use RTSP output plugin for proper timestamp support
+
 ## 🐛 Troubleshooting
 
 ### Common Issues
