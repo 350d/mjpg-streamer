@@ -25,7 +25,6 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <errno.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -399,14 +398,25 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
     // Now flag if we have completed
     if (buffer->flags & (MMAL_BUFFER_HEADER_FLAG_FRAME_END | MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED))
     {
-      //set frame size
+      // Update frame metadata BEFORE signaling
+      pglobal->in[plugin_number].prev_size = pglobal->in[plugin_number].current_size;
+      pglobal->in[plugin_number].current_size = pData->offset;
       pglobal->in[plugin_number].size = pData->offset;
+      pglobal->in[plugin_number].frame_sequence++;
 
       //Set frame timestamp
       if(wantTimestamp)
       {
         gettimeofday(&timestamp, NULL);
         pglobal->in[plugin_number].timestamp = timestamp;
+        pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
+      }
+      else
+      {
+        // Set default timestamp even if not requested
+        gettimeofday(&timestamp, NULL);
+        pglobal->in[plugin_number].timestamp = timestamp;
+        pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
       }
 
       //mark frame complete
@@ -485,6 +495,11 @@ static void camera_control_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
  ******************************************************************************/
 int input_run(int id)
 {
+  // Initialize frame metadata
+  pglobal->in[id].current_size = 0;
+  pglobal->in[id].prev_size = 0;
+  pglobal->in[id].frame_sequence = 0;
+  
   // OPTIMIZATION: Allocate smaller buffer for MJPEG instead of RGB
   // MJPEG is typically 10-20x smaller than raw RGB data
   pglobal->in[id].buf = malloc(width * height / 4); // Smaller buffer for MJPEG
