@@ -36,7 +36,6 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <errno.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <resolv.h>
 #include <arpa/inet.h>
@@ -145,26 +144,18 @@ void *worker_thread(void *arg)
     
     while(ok >= 0 && !pglobal->stop) {
         DBG("waiting for fresh frame\n");
-        pthread_mutex_lock(&pglobal->in[input_number].db);
         
-        if (!is_new_frame_available(&pglobal->in[input_number], &last_udp_sequence)) {
-            /* No new frame, wait for signal with timeout */
-            struct timespec timeout;
-            calculate_wait_timeout(&pglobal->in[input_number], &timeout);
-            int ret = pthread_cond_timedwait(&pglobal->in[input_number].db_update, &pglobal->in[input_number].db, &timeout);
-            if (ret == ETIMEDOUT) {
-                pthread_mutex_unlock(&pglobal->in[input_number].db);
-                continue;
-            }
-            /* Check again after signal */
-            if (!is_new_frame_available(&pglobal->in[input_number], &last_udp_sequence)) {
-                pthread_mutex_unlock(&pglobal->in[input_number].db);
-                continue;
-            }
+        /* Wait for fresh frame using condition variable (efficient) */
+        if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_udp_sequence)) {
+            continue; // No debug print here, as it's now a blocking wait
         }
 
         /* read buffer */
-        frame_size = pglobal->in[input_number].size;
+        frame_size = pglobal->in[input_number].current_size;
+        if(frame_size == 0) {
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
+            continue;
+        }
 
         /* allocate buffer for frame copy */
         if(current_frame == NULL || frame_size > 10*1024*1024) { // 10MB limit
@@ -183,6 +174,23 @@ void *worker_thread(void *arg)
         /* allow others to access the global buffer again */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
         
+        /* Check for UDP message (non-blocking) */
+        fd_set readfds;
+        struct timeval timeout;
+        FD_ZERO(&readfds);
+        FD_SET(sd, &readfds);
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 1000; // 1ms timeout
+        
+        if(select(sd + 1, &readfds, NULL, NULL, &timeout) > 0) {
+            if(FD_ISSET(sd, &readfds)) {
+                bytes = recvfrom(sd, udpbuffer, sizeof(udpbuffer)-1, 0, (struct sockaddr*)&addr, &addr_len);
+                if(bytes > 0) {
+                    udpbuffer[bytes] = '\0';
+                    DBG("UDP message received: %s\n", udpbuffer);
+                }
+            }
+        }
 
         /* only save a file if a name came in with the UDP message */
         if(strlen(udpbuffer) > 0) {
@@ -383,6 +391,20 @@ int output_run(int id)
     DBG("launching worker thread\n");
     pthread_create(&worker, 0, worker_thread, NULL);
     pthread_detach(worker);
+    return 0;
+}
+
+/******************************************************************************
+Description.: calling this function stops the worker thread
+Input Value.: -
+Return Value: always 0
+******************************************************************************/
+int output_cmd(int plugin, unsigned int control_id, unsigned int group, int value, char *value_string)
+{
+    DBG("output_cmd called with control_id=%d, group=%d, value=%d, value_string=%s\n", 
+        control_id, group, value, value_string ? value_string : "NULL");
+    
+    /* UDP output plugin doesn't support runtime commands */
     return 0;
 }
 
