@@ -1092,8 +1092,33 @@ int compress_rgb_to_jpeg(unsigned char *rgb_data, int width, int height, int qua
     return 0;
 #endif
 #else
-    /* No JPEG support on non-Linux systems */
-    return -1;
+    /* macOS implementation using TurboJPEG */
+    tjhandle handle = NULL;
+    unsigned char *output_data = NULL;
+    unsigned long output_size = 0;
+    int result = -1;
+    
+    /* Validate arguments */
+    if (!rgb_data || width <= 0 || height <= 0 || quality < 1 || quality > 100 || !jpeg_data || !jpeg_size) {
+        return -1;
+    }
+    
+    handle = tjInitCompress();
+    if (!handle) {
+        return -1;
+    }
+    
+    /* Compress RGB to JPEG */
+    result = tjCompress2(handle, rgb_data, width, 0, height, TJPF_RGB, 
+                        &output_data, &output_size, TJSAMP_444, quality, 0);
+    
+    if (result == 0) {
+        *jpeg_data = output_data;
+        *jpeg_size = output_size;
+    }
+    
+    tjDestroy(handle);
+    return (result == 0) ? 0 : -1;
 #endif
 }
 

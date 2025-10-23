@@ -108,6 +108,7 @@ add_subdirectory(src/plugins/input_file)
 add_subdirectory(src/plugins/input_http)
 add_subdirectory(src/plugins/input_raspicam)
 add_subdirectory(src/plugins/input_uvc)
+add_subdirectory(src/plugins/input_avf)
 
 #
 # Output plugins
