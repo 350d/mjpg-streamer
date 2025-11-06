@@ -8,7 +8,7 @@ High-performance RTSP streaming server with **RFC 2435 compliant JPEG over RTP**
 - **🎥 RFC 2435 Compliant**: Proper JPEG over RTP packetization with correct Type mapping
 - **🌐 HTTP Snapshot**: HTTP `/snapshot` endpoint on the same port for easy frame capture
 - **⚡ SIMD Optimized**: SSE2/NEON accelerated memory operations
-- **🔄 TCP/UDP Support**: Both TCP and UDP transport modes
+- **🔄 TCP/UDP Support**: Automatically uses transport mode requested by client
 - **📊 Multi-Client**: Support for up to 10 concurrent RTSP clients
 - **🎯 TurboJPEG**: Hardware-accelerated JPEG recompression with baseline format
 
@@ -17,7 +17,6 @@ High-performance RTSP streaming server with **RFC 2435 compliant JPEG over RTP**
 | Parameter | Short | Description | Default |
 |-----------|-------|-------------|---------|
 | `--port` | `-p` | RTSP server port | 8554 |
-| `--transport` | `-t` | Transport mode: `tcp` or `udp` | `udp` |
 
 ## 🎮 Usage Examples
 
@@ -33,13 +32,7 @@ High-performance RTSP streaming server with **RFC 2435 compliant JPEG over RTP**
                 -o "./plugins/output_rtsp.so -p 554"
 ```
 
-### TCP Transport Mode
-
-```bash
-# Force TCP transport (better for unreliable networks)
-./mjpg_streamer -i "./plugins/input_avf.dylib -r 1280x720 -f 30" \
-                -o "./plugins/output_rtsp.dylib -p 8554 -t tcp"
-```
+**Note:** The plugin automatically uses the transport mode requested by the client (TCP or UDP) in the RTSP SETUP request. No manual configuration is needed.
 
 ### Client Connection
 

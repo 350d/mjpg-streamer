@@ -47,8 +47,6 @@ static pthread_t stream_thread;
 static int input_number = 0;
 static globals *pglobal;
 static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-/* Transport mode: 0 = UDP (default), 1 = TCP */
-static int transport_mode = 0;
 /* RTP timestamp increment (90kHz clock) - updated per frame from wall clock */
 static uint32_t rtp_ts_increment = 3000; /* init ~30fps */
 /* Cached frame dimensions for consistent SDP and RTP headers - prevents VLC flickering */
@@ -358,7 +356,6 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
         OPRINT(" o: Malformed RTSP request\n");
         return;
     }
-    OPRINT(" o: RTSP request: %s %s %s\n", method, uri, version);
 
     // Parse headers
     while ((line = strtok_r(NULL, "\r\n", &saveptr))) {
@@ -374,9 +371,7 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                  "Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN\r\n"
                  "Server: MJPG-Streamer RTSP Server\r\n"
                  "\r\n", cseq);
-        OPRINT(" o: Sending OPTIONS response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent OPTIONS response: %zu bytes", strlen(response));
     } else if (strcmp(method, "DESCRIBE") == 0) {
         char sdp[512];
         int width = 640, height = 480; // Default values
@@ -434,36 +429,29 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                  "\r\n"
                  "%s",
                  cseq, strlen(sdp), sdp);
-        OPRINT(" o: Sending DESCRIBE response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent DESCRIBE response: %zu bytes", strlen(response));
     } else if (strcmp(method, "SETUP") == 0) {
         int client_rtp_port = 0, client_rtcp_port = 0;
-        int use_tcp = (transport_mode == 1) ? 1 : 0; /* Default from transport_mode */
-        int client_explicitly_requested_tcp = 0;
-        int client_explicitly_requested_udp = 0;
-        // Parse Transport header - use original request buffer
+        int use_tcp = 0; /* Default to UDP, but use what client requests */
+        // Parse Transport header - use what client requests
         char *transport_line = strstr(request, "Transport:");
         if (transport_line) {
             /* Check if client explicitly requested TCP */
             if (strstr(transport_line, "RTP/AVP/TCP")) { 
-                client_explicitly_requested_tcp = 1;
                 use_tcp = 1;
-            }
-            /* Check if client explicitly requested UDP */
-            char *client_port = strstr(transport_line, "client_port=");
-            if (client_port && !client_explicitly_requested_tcp) {
-                sscanf(client_port, "client_port=%d-%d", &client_rtp_port, &client_rtcp_port);
-                if (client_rtp_port > 0 && client_rtcp_port > 0) {
-                    client_explicitly_requested_udp = 1;
-                    use_tcp = 0;
+            } else {
+                /* Check if client explicitly requested UDP */
+                char *client_port = strstr(transport_line, "client_port=");
+                if (client_port) {
+                    sscanf(client_port, "client_port=%d-%d", &client_rtp_port, &client_rtcp_port);
+                    if (client_rtp_port > 0 && client_rtcp_port > 0) {
+                        use_tcp = 0;
+                    }
                 }
-                OPRINT(" o: Parsed client RTP/RTCP ports: %d/%d", client_rtp_port, client_rtcp_port);
             }
         }
         
         if (use_tcp) {
-            OPRINT(" o: Client requested TCP transport");
             int i;
             pthread_mutex_lock(&clients_mutex);
             for (i = 0; i < MAX_CLIENTS; i++) {
@@ -477,8 +465,6 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                     clients[i].timestamp = 0;
                     clients[i].addr = client_addr;
                     clients[i].playing = 0;
-                    OPRINT("[RTSP] Added client %d (TCP) on socket %d, addr=%s\n", 
-                           i, client_socket, inet_ntoa(client_addr.sin_addr));
                     break;
                 }
             }
@@ -499,7 +485,6 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                          "\r\n", cseq);
             }
         } else {
-            OPRINT(" o: Client requested UDP transport");
             int i;
             pthread_mutex_lock(&clients_mutex);
             for (i = 0; i < MAX_CLIENTS; i++) {
@@ -513,7 +498,6 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                     clients[i].timestamp = 0;
                     clients[i].addr = client_addr;
                     clients[i].playing = 0;
-                    OPRINT(" o: Added client %d (UDP) on socket %d with RTP port %d", i, client_socket, client_rtp_port);
                     break;
                 }
             }
@@ -534,23 +518,17 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                          "\r\n", cseq);
             }
         }
-        OPRINT(" o: Sending SETUP response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent SETUP response: %zu bytes", strlen(response));
     } else if (strcmp(method, "PLAY") == 0) {
-        OPRINT("[RTSP DEBUG] Received PLAY request for socket %d, cseq=%d\n", client_socket, cseq);
         int i;
         pthread_mutex_lock(&clients_mutex);
         for (i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].active && clients[i].socket == client_socket) {
                 clients[i].playing = 1;
-                OPRINT("[RTSP] Client %d started playing (socket=%d, active=%d, rtp_port=%d)\n", 
-                       i, clients[i].socket, clients[i].active, clients[i].rtp_port);
                 break;
             }
         }
         if (i < MAX_CLIENTS) {
-            OPRINT("[RTSP DEBUG] Client %d set to playing: active=%d, playing=%d, socket=%d, rtp_port=%d\n", i, clients[i].active, clients[i].playing, clients[i].socket, clients[i].rtp_port);
         } else {
             OPRINT("[RTSP ERROR] PLAY request but no matching client found for socket %d\n", client_socket);
         }
@@ -563,14 +541,11 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                  "Session: %d\r\n"
                  "Server: MJPG-Streamer RTSP Server\r\n"
                  "\r\n", cseq, session_id);
-        OPRINT(" o: Sending PLAY response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent PLAY response: %zu bytes", strlen(response));
         /* Wake streaming thread AFTER PLAY response is sent */
         /* This ensures client is ready to receive RTP packets */
         /* Send immediately - delays may cause flickering in VLC */
         if (pglobal && i < MAX_CLIENTS) {
-            OPRINT("[RTSP] PLAY: Broadcasting to wake streaming thread\n");
             pthread_mutex_lock(&pglobal->in[input_number].db);
             pthread_cond_broadcast(&pglobal->in[input_number].db_update);
             pthread_mutex_unlock(&pglobal->in[input_number].db);
@@ -581,7 +556,6 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
         for (i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].active && clients[i].socket == client_socket) {
                 clients[i].playing = 0;
-                OPRINT(" o: Client %d paused", i);
                 break;
             }
         }
@@ -592,9 +566,7 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                  "Session: %d\r\n"
                  "Server: MJPG-Streamer RTSP Server\r\n"
                  "\r\n", cseq, session_id);
-        OPRINT(" o: Sending PAUSE response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent PAUSE response: %zu bytes", strlen(response));
     } else if (strcmp(method, "TEARDOWN") == 0) {
         int i;
         pthread_mutex_lock(&clients_mutex);
@@ -602,7 +574,6 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
             if (clients[i].active && clients[i].socket == client_socket) {
                 clients[i].active = 0;
                 clients[i].playing = 0;
-                OPRINT(" o: Client %d disconnected", i);
                 break;
             }
         }
@@ -613,18 +584,14 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                  "Session: %d\r\n"
                  "Server: MJPG-Streamer RTSP Server\r\n"
                  "\r\n", cseq, session_id);
-        OPRINT(" o: Sending TEARDOWN response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent TEARDOWN response: %zu bytes", strlen(response));
     } else {
         snprintf(response, sizeof(response),
                  "RTSP/1.0 400 Bad Request\r\n"
                  "CSeq: %d\r\n"
                  "Server: MJPG-Streamer RTSP Server\r\n"
                  "\r\n", cseq);
-        OPRINT(" o: Sending Bad Request response: %zu bytes", strlen(response));
         send(client_socket, response, strlen(response), 0);
-        OPRINT(" o: Sent Bad Request response: %zu bytes", strlen(response));
     }
 }
 
@@ -769,7 +736,6 @@ static void* handle_client_thread(void* arg) {
     char buffer[4096];
     int bytes_read;
 
-    OPRINT("New client thread started for socket %d", client_socket);
 
     while ((bytes_read = recv(client_socket, buffer, sizeof(buffer) - 1, 0)) > 0) {
         buffer[bytes_read] = '\0';
@@ -795,8 +761,6 @@ static void* handle_client_thread(void* arg) {
             /* Skip this packet - it's interleaved RTP/RTCP data */
             unsigned char channel = buffer[1];
             unsigned int length = ((unsigned char)buffer[2] << 8) | (unsigned char)buffer[3];
-            OPRINT("[TCP] Received interleaved binary data: channel=%d, length=%u (total=%d)\n", 
-                   channel, length, bytes_read);
             /* If we received partial packet, read remaining bytes */
             if (bytes_read < 4 + length) {
                 size_t remaining = 4 + length - bytes_read;
@@ -813,7 +777,6 @@ static void* handle_client_thread(void* arg) {
         
         /* This is RTSP text request */
         buffer[bytes_read] = '\0';
-        OPRINT("Received RTSP request (%d bytes): %s", bytes_read, buffer);
         
         handle_rtsp_request(client_socket, client_addr, buffer, input_number);
     }
@@ -832,7 +795,6 @@ static void* handle_client_thread(void* arg) {
             clients[i].rtp_port = 0;
             clients[i].rtcp_port = 0;
             memset(&clients[i].addr, 0, sizeof(clients[i].addr));
-            OPRINT("Removed client %d from list", i);
             break;
         }
     }
@@ -858,14 +820,9 @@ void *rtsp_server_thread(void *arg)
     OPRINT("RTSP server thread started\n");
     
     while (server_running && !pglobal->stop) {
-        OPRINT("Waiting for client connection...\n");
-        OPRINT("Server socket: %d\n", server_socket);
-        OPRINT("Server running: %d\n", server_running);
-        OPRINT("Pglobal stop: %d\n", pglobal->stop);
         client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_len);
         if (client_socket < 0) {
             if (errno == EINTR) {
-                OPRINT("Accept interrupted, continuing...\n");
                 continue;
             }
             if (server_running) {
@@ -878,20 +835,15 @@ void *rtsp_server_thread(void *arg)
         /* This is critical for RTSP streaming to reduce startup delay */
         int flag = 1;
         if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) < 0) {
-            OPRINT("WARNING: Failed to set TCP_NODELAY on client socket %d: %s\n", 
-                   client_socket, strerror(errno));
+            /* Failed to set TCP_NODELAY - non-critical, continue */
         }
         /* Increase send buffer size for VLC - helps with stable streaming */
         /* VLC may need larger buffer to handle packet bursts */
         int send_buf_size = 256 * 1024; /* 256KB send buffer */
         if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size)) < 0) {
-            OPRINT("WARNING: Failed to set SO_SNDBUF on client socket %d: %s\n", 
-                   client_socket, strerror(errno));
+            /* Failed to set SO_SNDBUF - non-critical, continue */
         }
         
-        OPRINT("Client connected! Socket: %d\n", client_socket);
-        OPRINT("Client socket accepted: %d\n", client_socket);
-        OPRINT("Client address: %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         OPRINT("RTSP client connected from %s:%d\n", 
                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         
@@ -907,16 +859,13 @@ void *rtsp_server_thread(void *arg)
         client_data->socket = client_socket;
         client_data->addr = client_addr;
         
-        OPRINT("Creating client thread for socket %d\n", client_socket);
         
         if (pthread_create(&client_thread, NULL, handle_client_thread, client_data) != 0) {
-            OPRINT("Failed to create client thread\n");
             free(client_data);
             close(client_socket);
             continue;
         }
         
-        OPRINT("Client thread created successfully\n");
         pthread_detach(client_thread);
     }
     
@@ -1138,18 +1087,14 @@ int output_init(output_parameter *param, int id)
     /* Initialize global variables */
     pglobal = param->global;
     input_number = param->id;
-    OPRINT("[TJ] Decompress handle initialized (via jpeg_utils cache)\n");
     
     /* Parse parameters */
     /* Parameters are already parsed by mjpg_streamer main */
-    OPRINT("Parsing RTSP parameters: argc=%d\n", param->argc);
     if (param->argv && param->argc > 0) {
         for (int i = 0; i < param->argc; i++) {
             if (param->argv[i] && (!strcmp(param->argv[i], "-h") || !strcmp(param->argv[i], "--help"))) {
                 OPRINT("RTSP output plugin options:\n");
                 OPRINT("  -i, --input <num>   Input channel index (default from core)\n");
-                OPRINT("  -t, --tcp           Force RTP over RTSP (TCP)\n");
-                OPRINT("  -u, --udp           Use RTP over UDP (default)\n");
                 OPRINT("  -p, --port <num>    RTSP server port (default 554)\n");
                 return -1;
             } else if (param->argv[i] && (!strcmp(param->argv[i], "-i") || !strcmp(param->argv[i], "--input"))) {
@@ -1160,12 +1105,6 @@ int output_init(output_parameter *param, int id)
                     }
                     i++;
                 }
-            } else if (param->argv[i] && (!strcmp(param->argv[i], "-t") || !strcmp(param->argv[i], "--tcp"))) {
-                transport_mode = 1;
-                OPRINT("Transport set to TCP (--tcp)\n");
-            } else if (param->argv[i] && (!strcmp(param->argv[i], "-u") || !strcmp(param->argv[i], "--udp"))) {
-                transport_mode = 0;
-                OPRINT("Transport set to UDP (--udp)\n");
             } else if (param->argv[i] && (!strcmp(param->argv[i], "-p") || !strcmp(param->argv[i], "--port"))) {
                 if (i + 1 < param->argc && param->argv[i + 1]) {
                     port = atoi(param->argv[i + 1]);
