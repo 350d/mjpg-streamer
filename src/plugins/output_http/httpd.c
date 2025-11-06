@@ -785,6 +785,7 @@ void send_snapshot(cfd *context_fd, int input_number)
         }
         buffer = malloc(BUFFER_SIZE);
         if(buffer == NULL) {
+            if(frame != server_context->static_frame_buffer) free(frame);
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             LOG("not enough memory for header buffer\n");
             return;

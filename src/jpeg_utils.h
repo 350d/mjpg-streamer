@@ -23,6 +23,21 @@ int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size,
 /* TurboJPEG handle caching functions */
 void cleanup_turbojpeg_handles(void);
 
+/* Default JPEG quantization tables (quality ~75) */
+extern const unsigned char jpeg_default_qt_luma[64];
+extern const unsigned char jpeg_default_qt_chroma[64];
+
+/* TurboJPEG helpers */
+/* Returns 0 on success; fills width, height, subsamp (TJSAMP_*). */
+int turbojpeg_header_info(const unsigned char *jpeg_data, int jpeg_size,
+                          int *width, int *height, int *subsamp);
+
+/* Recompress JPEG to baseline with default Huffman tables (RFC 2435 compatible) */
+int recompress_jpeg_to_baseline_with_default_dht(const unsigned char *input_jpeg, int input_size,
+                                                 unsigned char **output_jpeg, unsigned long *output_size,
+                                                 int quality, int target_subsamp);
+
+
 /* JPEG utility functions */
 
 

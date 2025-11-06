@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <getopt.h>
@@ -1039,12 +1040,20 @@ void *worker_thread(void *arg)
         if(check_interval > 1 && frame_counter % check_interval != 0) {
             /* Don't wait for signal if we're skipping - let others get it */
             pthread_mutex_unlock(&pglobal->in[input_number].db);
+            if (current_frame && save_folder == NULL) {
+                free(current_frame);
+                current_frame = NULL;
+            }
             continue;
         }
 
         /* Check if JPEG size changed significantly - use global metadata */
         if(!is_jpeg_size_changed(pglobal->in[input_number].current_size, pglobal->in[input_number].prev_size, size_threshold)) {
             pthread_mutex_unlock(&pglobal->in[input_number].db);
+            if (current_frame && save_folder == NULL) {
+                free(current_frame);
+                current_frame = NULL;
+            }
             continue;
         }
 
@@ -1074,6 +1083,10 @@ void *worker_thread(void *arg)
         
         if(decode_any_to_y_component(current_frame, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
             pthread_mutex_unlock(&pglobal->in[input_number].db);
+            if (current_frame && save_folder == NULL) {
+                free(current_frame);
+                current_frame = NULL;
+            }
             continue;
         }
         

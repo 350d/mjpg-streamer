@@ -242,16 +242,6 @@ int output_init(output_parameter *param, int id)
         cleanup_async_io(&servers[param->id].async_io);
         return -1;
     }
-
-    /* Validate input plugin number */
-    if(!(input_number < param->global->incnt)) {
-        OPRINT("ERROR: the %d input_plugin number is too much only %d plugins loaded\n", input_number, param->global->incnt);
-        cleanup_async_io(&servers[param->id].async_io);
-        cleanup_header_cache(&servers[param->id].headers);
-        return 1;
-    }
-
-    OPRINT("input plugin.....: %d: %s\n", input_number, param->global->in[input_number].plugin);
     OPRINT("www-folder-path......: %s\n", (www_folder == NULL) ? "disabled" : www_folder);
     OPRINT("HTTP TCP port........: %d\n", ntohs(port));
     OPRINT("HTTP Listen Address..: %s\n", hostname);

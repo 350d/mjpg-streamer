@@ -38,6 +38,9 @@ include(CheckLibraryExists)
 include(CheckIncludeFiles)
 include(FeatureSummary)
 
+# Add include directories for turbojpeg
+include_directories(/opt/homebrew/include)
+
 include(mjpg_streamer_utils)
 
 #

@@ -230,6 +230,12 @@ make -j1
 # RTSP streaming (for better compatibility)
 ./mjpg_streamer -i "./plugins/input_avf.dylib -d 0 -r 1280x720 -f 30" \
                 -o "./plugins/output_rtsp.dylib -p 8554"
+
+# RTSP with HTTP snapshot on same port
+./mjpg_streamer -i "./plugins/input_avf.dylib -d 0 -r 1280x720 -f 30" \
+                -o "./plugins/output_rtsp.dylib -p 8554"
+# Access: rtsp://127.0.0.1:8554/stream (RTSP)
+# Access: http://127.0.0.1:8554/snapshot (HTTP snapshot)
 ```
 
 ## 📊 Motion Detection Parameters
@@ -263,7 +269,7 @@ make -j1
 - **output_http.so**: HTTP MJPEG streaming server
 - **output_motion.so**: Advanced motion detection with zone support
 - **output_file.so**: Save frames to files
-- **output_rtsp.so**: RTSP streaming
+- **output_rtsp.so**: RTSP streaming with HTTP snapshot support
 - **output_udp.so**: UDP streaming
 - **output_viewer.so**: Simple viewer window
 
@@ -344,11 +350,22 @@ X-Timestamp: 1234567890.123456
 ```bash
 # RTSP with proper timestamp support
 ./mjpg_streamer -i "./plugins/input_uvc.so -timestamp" \
-                -o "./plugins/output_rtsp.so"
+                -o "./plugins/output_rtsp.so -p 8554"
 
 # FFmpeg can read RTSP timestamps
 ffmpeg -i rtsp://localhost:8554/stream -f mp4 output.mp4
+
+# HTTP snapshot endpoint (same port)
+curl http://localhost:8554/snapshot -o snapshot.jpg
 ```
+
+**RTSP Plugin Features:**
+- Full RTSP protocol support (OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN)
+- RFC 2435 compliant JPEG over RTP packetization
+- HTTP `/snapshot` endpoint on the same port
+- TCP and UDP transport modes
+- TurboJPEG accelerated frame processing
+- SIMD-optimized memory operations
 
 **Alternative solutions:**
 - Use external timestamp synchronization tools
@@ -423,6 +440,7 @@ mjpg-streamer/
 │   ├── input_avf/          # macOS camera support (AVFoundation)
 │   ├── output_motion/      # Zone-based motion detection
 │   ├── output_http/        # HTTP streaming server
+│   ├── output_rtsp/        # RTSP streaming with HTTP snapshot
 │   └── ...
 ├── src/
 │   ├── jpeg_utils.c        # TurboJPEG integration
