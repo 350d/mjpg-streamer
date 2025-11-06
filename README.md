@@ -51,7 +51,7 @@ The new zone-based motion detection allows you to focus on specific areas of the
 
 ### TurboJPEG Acceleration
 - **3-5x faster JPEG decoding** compared to standard libjpeg
-- **Automatic detection** with graceful fallback to libjpeg
+- **TurboJPEG is REQUIRED** - no fallback to libjpeg
 - **Enhanced MJPEG compatibility** with automatic Huffman table insertion
 - **25-30% CPU reduction** on Raspberry Pi Zero
 

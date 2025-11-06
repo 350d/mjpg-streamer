@@ -75,7 +75,7 @@ set (MJPG_STREAMER_PLUGIN_INSTALL_PATH "lib/mjpg-streamer")
 # Global dependencies
 #
 
-# Find TurboJPEG first, fallback to libjpeg
+# TurboJPEG is REQUIRED - no fallback to libjpeg
 find_library(TURBOJPEG_LIB turbojpeg)
 if(TURBOJPEG_LIB)
     set(TURBOJPEG_FOUND TRUE)
@@ -83,23 +83,7 @@ if(TURBOJPEG_LIB)
     add_definitions(-DHAVE_TURBOJPEG)
     message(STATUS "Found TurboJPEG: ${TURBOJPEG_LIB}")
 else()
-    # Fallback to regular JPEG library
-    if(JPEG_INCLUDE_DIR AND JPEG_LIBRARY)
-        # Use provided JPEG paths for cross-compilation
-        set(JPEG_FOUND TRUE)
-        message(STATUS "Using provided JPEG: ${JPEG_LIBRARY}")
-    else()
-        # Find JPEG library normally
-        find_library(JPEG_LIB jpeg)
-        if(JPEG_LIB)
-            set(JPEG_LIBRARY ${JPEG_LIB})
-            set(JPEG_FOUND TRUE)
-        endif()
-    endif()
-    
-    if(NOT JPEG_FOUND)
-        message(FATAL_ERROR "JPEG library not found. Please install libjpeg-dev or libturbojpeg-dev or provide JPEG_INCLUDE_DIR and JPEG_LIBRARY for cross-compilation.")
-    endif()
+    message(FATAL_ERROR "TurboJPEG library not found. TurboJPEG is REQUIRED for this project. Please install libturbojpeg-dev (on Linux) or turbojpeg (on macOS via Homebrew).")
 endif()
 
 

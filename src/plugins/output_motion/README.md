@@ -174,7 +174,7 @@ Example: `20240115_143025_motion_75.0%.jpg`
 - **3-5x faster JPEG decoding** compared to standard libjpeg
 - **Automatic DHT table insertion** for MJPEG stream compatibility
 - **Enhanced JPEG frame cleaning** removes garbage data from camera streams
-- **Fallback to libjpeg** if TurboJPEG is not available
+- **TurboJPEG is REQUIRED** - no fallback to libjpeg
 
 ### Zone-Based Processing
 - **Focused analysis**: Only process relevant zones (weight > 0)
@@ -267,8 +267,7 @@ Example: `20240115_143025_motion_75.0%.jpg`
 
 - **libcurl**: For webhook notifications
 - **pthread**: For multi-threading support
-- **libjpeg**: For JPEG processing
-- **libturbojpeg**: For accelerated JPEG processing (optional)
+- **libturbojpeg**: For accelerated JPEG processing (REQUIRED)
 
 ## 📦 Installation
 
