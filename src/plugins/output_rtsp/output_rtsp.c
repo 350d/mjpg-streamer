@@ -26,6 +26,10 @@
 #define MAX_TCP_PACKET_SIZE 8192  // Larger packet size for TCP to reduce fragmentation
 #define MAX_FRAME_SIZE (10 * 1024 * 1024)  // 10MB max frame size
 
+/* RTSP response templates */
+#define RTSP_SERVER_NAME "MJPG-Streamer RTSP Server"
+#define RTSP_VERSION "RTSP/1.0"
+
 /* GStreamer style: QT tables are used in natural order (as in DQT), no zigzag conversion */
 
 typedef struct {
@@ -48,42 +52,52 @@ static pthread_t stream_thread;
 static int input_number = 0;
 static globals *pglobal;
 static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-/* RTP timestamp increment (90kHz clock) - updated per frame from wall clock */
-static uint32_t rtp_ts_increment = 3000; /* init ~30fps */
-/* Cached frame dimensions for consistent SDP and RTP headers - prevents VLC flickering */
+static uint32_t rtp_ts_increment = 3000;
 static int cached_sdp_width = 640;
 static int cached_sdp_height = 480;
 static int sdp_dimensions_cached = 0;
-
-/* Performance optimization: static buffers */
 static unsigned char static_frame_buffer[MAX_FRAME_SIZE];
 static int use_static_buffers = 1;
-
-/* Snapshot buffer for HTTP /snapshot endpoint */
 static unsigned char *snapshot_buffer = NULL;
 static size_t snapshot_size = 0;
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
 typedef struct {
-    unsigned char *rtp_payload;        /* RTP/JPEG payload (JPEG header + optional QT + scan data) or full JPEG */
-    size_t rtp_payload_size;           /* Size of RTP payload */
+    unsigned char *rtp_payload;
+    size_t rtp_payload_size;
     int width;
     int height;
-    int subsamp;                       /* TurboJPEG subsampling (TJSAMP_*) */
-    int jpeg_type;                     /* RFC2435 type (0/1/3) */
-    int is_rtp_format;                 /* 1 = RTP/JPEG format (no SOI/EOI), 0 = full JPEG format */
-    /* Quantization tables for this frame (to avoid race condition with global cache) */
+    int subsamp;
+    int jpeg_type;
+    int is_rtp_format;
     uint8_t qt_luma[64];
     uint8_t qt_chroma[64];
     int have_luma;
     int have_chroma;
-    int qt_precision;                  /* 0 = 8-bit, 1 = 16-bit */
+    int qt_precision;
 } rtp_jpeg_frame_t;
 
 static void free_rtp_jpeg_frame(rtp_jpeg_frame_t *frame);
 static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_size,
                                   rtp_jpeg_frame_t *frame_info);
+static int send_rtsp_response(int client_socket, int cseq, int status_code, const char *status_text, 
+                              const char *headers, const char *body);
+static int find_client_by_socket(int client_socket);
+static void clear_client(int client_idx);
+static int is_valid_client(int client_idx);
+static void build_session_header(char *headers, size_t headers_size, int session_id);
+static void build_sdp_headers(char *headers, size_t headers_size, size_t sdp_len);
+static void build_http_headers(char *headers, size_t headers_size, int status_code, 
+                              const char *status_text, const char *content_type, size_t content_length);
+static int send_http_error(int client_socket, int status_code, const char *status_text, 
+                          const char *content_type, const char *error_body);
+static void handle_rtsp_options(int client_socket, int cseq);
+static void handle_rtsp_describe(int client_socket, int cseq, struct sockaddr_in client_addr, int input_number);
+static void handle_rtsp_setup(int client_socket, int cseq, struct sockaddr_in client_addr, char *request);
+static void handle_rtsp_play(int client_socket, int cseq, int session_id, int input_number);
+static void handle_rtsp_pause(int client_socket, int cseq, int session_id);
+static void handle_rtsp_teardown(int client_socket, int cseq, int session_id);
 
 static void free_rtp_jpeg_frame(rtp_jpeg_frame_t *frame)
 {
@@ -106,40 +120,7 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
 
     memset(frame_info, 0, sizeof(*frame_info));
     
-    /* DEBUG: Check if input JPEG already contains duplicate EOI or next JPEG frame */
-    static int input_check_count = 0;
-    if (input_check_count++ < 3) {
-        /* Find first EOI in input JPEG */
-        size_t first_eoi = 0;
-        for (size_t i = 1; i < jpeg_size; ) {
-            if (jpeg_data[i-1] == 0xFF && jpeg_data[i] == 0xD9) {
-                first_eoi = i + 1; /* Position after first EOI */
-                break;
-            } else if (jpeg_data[i-1] == 0xFF && jpeg_data[i] == 0x00) {
-                i += 2;
-                continue;
-            } else {
-                i++;
-            }
-        }
-        OPRINT("[RTP DEBUG] Input JPEG: size=%zu, first_eoi=%zu\n", jpeg_size, first_eoi);
-        if (first_eoi > 0 && first_eoi < jpeg_size) {
-            unsigned char next1 = jpeg_data[first_eoi];
-            unsigned char next2 = jpeg_data[first_eoi + 1];
-            OPRINT("[RTP DEBUG] Input JPEG: bytes after first EOI (offset %zu): 0x%02X 0x%02X\n",
-                   first_eoi, next1, next2);
-            if (next1 == 0xFF && (next2 == 0xD9 || next2 == 0xD8)) {
-                OPRINT("[RTP DEBUG] Input JPEG ALREADY contains duplicate EOI or next JPEG after first EOI!\n");
-            }
-        } else if (first_eoi == 0) {
-            OPRINT("[RTP DEBUG] Input JPEG: EOI not found!\n");
-        } else if (first_eoi >= jpeg_size) {
-            OPRINT("[RTP DEBUG] Input JPEG: first EOI at end of JPEG (first_eoi=%zu, jpeg_size=%zu)\n", 
-                   first_eoi, jpeg_size);
-        }
-    }
 
-    /* Get dimensions and subsampling from input JPEG */
     int input_width = 0;
     int input_height = 0;
     int input_subsamp = -1;
@@ -148,12 +129,7 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         return -1;
     }
 
-    /* Trim JPEG to first EOI to remove any padding - handle escape sequences */
-    /* CRITICAL: Must find FIRST EOI (not last) and trim strictly to it (including EOI, excluding anything after) */
-    /* Search from SOI (0xFF 0xD8) to find first EOI (0xFF 0xD9) */
     size_t eoi_pos = jpeg_size;
-    
-    /* First, find SOI to ensure we're searching within a valid JPEG */
     size_t soi_pos = 0;
     if (jpeg_size < 2 || jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
         OPRINT("[RTP ERROR] JPEG does not start with SOI (0xFF 0xD8)\n");
@@ -161,16 +137,12 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
     }
     soi_pos = 0;
     
-    /* Search for first EOI after SOI - handle escape sequences (0xFF 0x00) in scan data */
     for (size_t i = soi_pos + 2; i < jpeg_size; ) {
         if (jpeg_data[i-1] == 0xFF) {
             if (jpeg_data[i] == 0xD9) {
-                /* Found FIRST EOI marker - eoi_pos points to position AFTER EOI (i + 1) */
-                /* This means EOI is at positions (i-1, i) = (eoi_pos-2, eoi_pos-1) */
                 eoi_pos = i + 1;
-                break; /* CRITICAL: Break on FIRST EOI, not last */
+                break;
             } else if (jpeg_data[i] == 0x00) {
-                /* Escape sequence in scan data - skip both bytes */
                 i += 2;
                 continue;
             } else {
@@ -181,21 +153,14 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         }
     }
     
-    /* CRITICAL: Verify that bytes immediately after EOI are not duplicate EOI or SOI */
-    /* This prevents including duplicate EOI or next JPEG frame in the payload */
-    /* eoi_pos points to position AFTER EOI, so bytes at eoi_pos and eoi_pos+1 are after EOI */
     if (eoi_pos < jpeg_size) {
         if (eoi_pos + 1 < jpeg_size && jpeg_data[eoi_pos] == 0xFF) {
             unsigned char next_byte = jpeg_data[eoi_pos + 1];
             if (next_byte == 0xD9 || next_byte == 0xD8) {
-                /* Duplicate EOI or next JPEG SOI found - trim strictly to first EOI */
-                /* eoi_pos already set correctly above (i + 1) - this is the position AFTER first EOI */
-                /* We will copy eoi_pos bytes, which includes EOI at (eoi_pos-2, eoi_pos-1) */
             }
         }
     }
     
-    /* CRITICAL: Verify that eoi_pos points to position after EOI, and EOI is at (eoi_pos-2, eoi_pos-1) */
     if (eoi_pos < 2 || eoi_pos > jpeg_size) {
         OPRINT("[RTP ERROR] Invalid EOI position: eoi_pos=%zu, jpeg_size=%zu\n", eoi_pos, jpeg_size);
         return -1;
@@ -205,17 +170,13 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         return -1;
     }
     
-    /* Verify no non-padding data after EOI */
     size_t check_pos = eoi_pos;
     while (check_pos < jpeg_size && (jpeg_data[check_pos] == 0x00 || jpeg_data[check_pos] == 0xFF)) {
         check_pos++;
     }
     if (check_pos < jpeg_size) {
-        /* Non-padding data found after EOI - truncate at first EOI */
-        /* eoi_pos already set correctly above */
     }
     
-    /* Locate Start of Scan (SOS) marker and extract only entropy-coded scan */
     size_t sos_pos = 0, scan_start = 0;
     for (size_t i = soi_pos + 2; i + 3 < jpeg_size; ) {
         if (jpeg_data[i] == 0xFF && jpeg_data[i + 1] == 0xDA) {
@@ -247,14 +208,12 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         return -1;
     }
 
-    /* Copy only entropy-coded scan data (exclude SOI..SOS headers and EOI) */
     size_t scan_len = (eoi_pos - 2) - scan_start;
     if (scan_len == 0) {
         OPRINT("[RTP ERROR] Empty scan segment\n");
         return -1;
     }
     
-    /* Optimize: Check for EOI before allocation */
     if (scan_len >= 2 && jpeg_data[scan_start + scan_len - 2] == 0xFF && jpeg_data[scan_start + scan_len - 1] == 0xD9) {
         OPRINT("[RTP ERROR] Scan buffer ends with EOI unexpectedly\n");
         return -1;
@@ -267,7 +226,6 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
     }
     simd_memcpy(scan_only, jpeg_data + scan_start, scan_len);
 
-    /* Store scan-only payload for RTP transmission */
     frame_info->rtp_payload = scan_only;
     frame_info->rtp_payload_size = scan_len;
     frame_info->is_rtp_format = 1;
@@ -275,115 +233,196 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
     frame_info->height = input_height;
     frame_info->subsamp = input_subsamp;
 
-               /* RFC 2435, Table: Types 0-7 (without restart)
-                * Type 0 = 4:2:2, Type 1 = 4:2:0, Type 2 = 4:1:1, Type 3 = 4:4:4
-                * CRITICAL: Correct subsampling mapping for color stability
-                */
                switch (frame_info->subsamp) {
-                   case TJSAMP_422: frame_info->jpeg_type = 0; break; /* 4:2:2 -> Type 0 */
-                   case TJSAMP_420: frame_info->jpeg_type = 1; break; /* 4:2:0 -> Type 1 */
-                   case TJSAMP_411: frame_info->jpeg_type = 2; break; /* 4:1:1 -> Type 2 */
-                   case TJSAMP_444: frame_info->jpeg_type = 3; break; /* 4:4:4 -> Type 3 */
+                   case TJSAMP_422: frame_info->jpeg_type = 0; break;
+                   case TJSAMP_420: frame_info->jpeg_type = 1; break;
+                   case TJSAMP_411: frame_info->jpeg_type = 2; break;
+                   case TJSAMP_444: frame_info->jpeg_type = 3; break;
                    case TJSAMP_440: 
-                       /* RFC 2435 doesn't support 4:4:0 - force to 4:2:0 (Type 1) */
                        OPRINT("[RTP WARNING] TJSAMP_440 (4:4:0) not supported by RFC 2435, mapping to Type 1 (4:2:0)\n");
                        frame_info->jpeg_type = 1; 
                        break;
                    case TJSAMP_GRAY:
-                       /* Grayscale - RFC 2435 doesn't explicitly support it */
                        OPRINT("[RTP WARNING] TJSAMP_GRAY (grayscale) - using Type 3 (4:4:4) temporarily\n");
                        frame_info->jpeg_type = 3;
                        break;
                    default:
                        OPRINT("[RTP WARNING] Unknown subsampling %d, defaulting to Type 0 (4:2:2)\n", frame_info->subsamp);
-                       frame_info->jpeg_type = 0; /* fallback: 4:2:2 */
+                       frame_info->jpeg_type = 0;
                        break;
                }
 
-               /* DEBUG: Log subsampling and type mapping */
-               static int subsamp_log_count = 0;
-               if (subsamp_log_count++ < 10) {
-                   const char *subsamp_name = "UNKNOWN";
-                   switch (frame_info->subsamp) {
-                       case TJSAMP_420: subsamp_name = "4:2:0"; break;
-                       case TJSAMP_422: subsamp_name = "4:2:2"; break;
-                       case TJSAMP_444: subsamp_name = "4:4:4"; break;
-                       case TJSAMP_440: subsamp_name = "4:4:0"; break;
-                       case TJSAMP_411: subsamp_name = "4:1:1"; break;
-                       case TJSAMP_GRAY: subsamp_name = "GRAY"; break;
-                       default: break;
-                   }
-                   OPRINT("[RTP DEBUG] Frame subsamp=%s (%d), RTP type=%d, width=%d, height=%d\n",
-                          subsamp_name, frame_info->subsamp, frame_info->jpeg_type,
-                          frame_info->width, frame_info->height);
-               }
 
-    /* DIAGNOSTIC: Dump source JPEG header (first 200 bytes) */
-    static int jpeg_dump_count = 0;
-    if (jpeg_dump_count++ < 3) {
-        const char *jpeg_dump_file = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/rtsp_diagnostics/source_jpeg_header.bin";
-        FILE *jpeg_file = fopen(jpeg_dump_file, "wb");
-        if (jpeg_file) {
-            size_t dump_size = (eoi_pos < 200) ? eoi_pos : 200;
-            fwrite(jpeg_data, 1, dump_size, jpeg_file);
-            fclose(jpeg_file);
-            OPRINT("[RTP DIAG] Dumped source JPEG header (%zu bytes) to %s\n", dump_size, jpeg_dump_file);
-        }
-    }
-    
-    /* CRITICAL: Extract and cache quantization tables from source JPEG BEFORE extracting scan data.
-     * Store tables in frame structure to avoid race condition with global cache.
-     * Tables will be included in RTP payload if Q=255 is set.
-     * NO sanitization - preserve original values as-is in NATURAL order (as in DQT)
-     */
     rtpjpeg_cache_qtables_from_jpeg(jpeg_data, eoi_pos);
     const uint8_t *qt_luma_ptr = NULL, *qt_chroma_ptr = NULL;
     int have_luma = 0, have_chroma = 0, qt_precision = 0;
     if (rtpjpeg_get_cached_qtables(&qt_luma_ptr, &qt_chroma_ptr, &have_luma, &have_chroma, &qt_precision) == 0) {
-        /* Copy tables to frame structure - preserve NATURAL order as in DQT */
         frame_info->have_luma = have_luma;
         frame_info->have_chroma = have_chroma;
         frame_info->qt_precision = qt_precision;
         if (have_luma && qt_luma_ptr) {
             simd_memcpy(frame_info->qt_luma, qt_luma_ptr, 64);
-            /* NO sanitization - preserve original values as-is */
         }
         if (have_chroma && qt_chroma_ptr) {
             simd_memcpy(frame_info->qt_chroma, qt_chroma_ptr, 64);
-            /* NO sanitization - preserve original values as-is */
-        }
-        static int cache_log_count = 0;
-        if (cache_log_count++ < 5) {
-            OPRINT("[RTP DEBUG] Quantization tables cached: have_luma=%d, have_chroma=%d, precision=%d\n",
-                   have_luma, have_chroma, qt_precision);
-        }
-        
-        /* DIAGNOSTIC: Dump extracted QT tables (natural order) */
-        static int qt_dump_count = 0;
-        if (qt_dump_count++ < 3) {
-            const char *qt_dump_file = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/rtsp_diagnostics/qt_extracted_natural.bin";
-            FILE *qt_file = fopen(qt_dump_file, "wb");
-            if (qt_file) {
-                if (have_luma && qt_luma_ptr) {
-                    fwrite(qt_luma_ptr, 1, 64, qt_file);
-                }
-                if (have_chroma && qt_chroma_ptr) {
-                    fwrite(qt_chroma_ptr, 1, 64, qt_file);
-                }
-                fclose(qt_file);
-                OPRINT("[RTP DIAG] Dumped extracted QT tables (natural order) to %s\n", qt_dump_file);
-            }
         }
     } else {
         frame_info->have_luma = 0;
         frame_info->have_chroma = 0;
         frame_info->qt_precision = 0;
-        static int cache_log_count = 0;
-        if (cache_log_count++ < 5) {
-            OPRINT("[RTP DEBUG] No quantization tables found in JPEG\n");
-        }
     }
 
+    return 0;
+}
+
+/******************************************************************************
+Description.: Send RTSP response
+Input Value.: client socket, cseq, status code, status text, headers, body
+Return Value: 0 on success, -1 on error
+******************************************************************************/
+static int send_rtsp_response(int client_socket, int cseq, int status_code, const char *status_text, 
+                              const char *headers, const char *body)
+{
+    char response[1024];
+    int len = snprintf(response, sizeof(response),
+                      RTSP_VERSION " %d %s\r\n"
+                      "CSeq: %d\r\n"
+                      "%s"
+                      "Server: " RTSP_SERVER_NAME "\r\n"
+                      "\r\n",
+                      status_code, status_text, cseq, headers ? headers : "");
+    if (body && len < (int)sizeof(response) - 1) {
+        len += snprintf(response + len, sizeof(response) - len, "%s", body);
+    }
+    return send(client_socket, response, len, 0) == len ? 0 : -1;
+}
+
+/******************************************************************************
+Description.: Find client by socket
+Input Value.: client socket
+Return Value: client index or -1 if not found
+******************************************************************************/
+static int find_client_by_socket(int client_socket)
+{
+    pthread_mutex_lock(&clients_mutex);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].active && clients[i].socket == client_socket) {
+            pthread_mutex_unlock(&clients_mutex);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    return -1;
+}
+
+/******************************************************************************
+Description.: Clear client structure
+Input Value.: client index
+Return Value: none
+******************************************************************************/
+static void clear_client(int client_idx)
+{
+    if (client_idx < 0 || client_idx >= MAX_CLIENTS) {
+        return;
+    }
+    clients[client_idx].active = 0;
+    clients[client_idx].playing = 0;
+    clients[client_idx].socket = 0;
+    clients[client_idx].rtp_port = 0;
+    clients[client_idx].rtcp_port = 0;
+    clients[client_idx].sequence_number = 0;
+    clients[client_idx].timestamp = 0;
+    memset(&clients[client_idx].addr, 0, sizeof(clients[client_idx].addr));
+}
+
+/******************************************************************************
+Description.: Check if client is valid (active, playing, and has valid transport)
+Input Value.: client index
+Return Value: 1 if valid, 0 otherwise
+******************************************************************************/
+static int is_valid_client(int client_idx)
+{
+    if (client_idx < 0 || client_idx >= MAX_CLIENTS) {
+        return 0;
+    }
+    if (!clients[client_idx].active || !clients[client_idx].playing) {
+        return 0;
+    }
+    int is_tcp_client = (clients[client_idx].socket > 0 && clients[client_idx].rtp_port == 0);
+    int is_udp_client = (clients[client_idx].socket > 0 && clients[client_idx].rtp_port > 0 && 
+                         clients[client_idx].addr.sin_addr.s_addr != 0);
+    return (is_tcp_client || is_udp_client) ? 1 : 0;
+}
+
+/******************************************************************************
+Description.: Build Session header for RTSP response
+Input Value.: headers buffer, buffer size, session ID
+Return Value: none
+******************************************************************************/
+static void build_session_header(char *headers, size_t headers_size, int session_id)
+{
+    snprintf(headers, headers_size, "Session: %d\r\n", session_id);
+}
+
+/******************************************************************************
+Description.: Build SDP headers for RTSP DESCRIBE response
+Input Value.: headers buffer, buffer size, SDP length
+Return Value: none
+******************************************************************************/
+static void build_sdp_headers(char *headers, size_t headers_size, size_t sdp_len)
+{
+    snprintf(headers, headers_size,
+             "Content-Type: application/sdp\r\n"
+             "Content-Length: %zu\r\n",
+             sdp_len);
+}
+
+/******************************************************************************
+Description.: Build HTTP headers for HTTP response
+Input Value.: headers buffer, buffer size, status code, status text, content type, content length
+Return Value: none
+******************************************************************************/
+static void build_http_headers(char *headers, size_t headers_size, int status_code, 
+                              const char *status_text, const char *content_type, size_t content_length)
+{
+    if (content_type && strcmp(content_type, "image/jpeg") == 0) {
+        snprintf(headers, headers_size,
+                 "HTTP/1.0 %d %s\r\n"
+                 "Content-Type: %s\r\n"
+                 "Content-Length: %zu\r\n"
+                 "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+                 "Pragma: no-cache\r\n"
+                 "Expires: 0\r\n"
+                 "\r\n",
+                 status_code, status_text, content_type, content_length);
+    } else {
+        snprintf(headers, headers_size,
+                 "HTTP/1.0 %d %s\r\n"
+                 "Content-Type: %s\r\n"
+                 "Content-Length: %zu\r\n"
+                 "\r\n",
+                 status_code, status_text, content_type ? content_type : "text/plain", content_length);
+    }
+}
+
+/******************************************************************************
+Description.: Send HTTP error response
+Input Value.: client socket, status code, status text, content type, error body
+Return Value: 0 on success, -1 on error
+******************************************************************************/
+static int send_http_error(int client_socket, int status_code, const char *status_text, 
+                          const char *content_type, const char *error_body)
+{
+    size_t error_body_len = strlen(error_body);
+    char header[512];
+    build_http_headers(header, sizeof(header), status_code, status_text, 
+                      content_type ? content_type : "text/plain", error_body_len);
+    if (send(client_socket, header, strlen(header), 0) < 0) {
+        return -1;
+    }
+    if (send(client_socket, error_body, error_body_len, 0) < 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -395,41 +434,10 @@ Return Value: 0 on success, -1 on error
 static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg_frame_t *frame,
                            uint32_t frame_timestamp, int client_idx)
 {
-    /* Initialize QT insertion settings */
-    const int qt_insertion_enabled = 1; /* ENABLED: RFC 2435 QT header insertion */
+    const int qt_insertion_enabled = 1;
     const int have_both = frame->have_luma && frame->have_chroma;
     const int q255_ok = (frame->qt_precision == 0) && have_both;
     int q_value_fixed = q255_ok ? 255 : 75;
-    
-    /* Log QT disabled fallback */
-    static int qt_fallback_log_count = 0;
-    if (!q255_ok && qt_fallback_log_count++ < 5) {
-        OPRINT("[RTP WARNING] QT disabled, fallback Q=75 (no DQT): precision=%d, have_luma=%d, have_chroma=%d\n",
-               frame->qt_precision, frame->have_luma, frame->have_chroma);
-    }
-    
-    /* DEBUG: Log actual subsamp and selected type before sending */
-    static int send_subsamp_log_count = 0;
-    if (send_subsamp_log_count++ < 5) {
-        const char *subsamp_name = "UNKNOWN";
-        switch (frame->subsamp) {
-            case TJSAMP_420: subsamp_name = "4:2:0"; break;
-            case TJSAMP_422: subsamp_name = "4:2:2"; break;
-            case TJSAMP_444: subsamp_name = "4:4:4"; break;
-            case TJSAMP_440: subsamp_name = "4:4:0"; break;
-            case TJSAMP_411: subsamp_name = "4:1:1"; break;
-            case TJSAMP_GRAY: subsamp_name = "GRAY"; break;
-            default: break;
-        }
-        OPRINT("[RTP DEBUG] send_rtp_packet: subsamp=%s (%d), type=%d, Q=%d, is_rtp_format=%d\n",
-               subsamp_name, frame->subsamp, frame->jpeg_type, q_value_fixed, frame->is_rtp_format);
-    }
-    
-    static int send_count = 0;
-    if (send_count++ < 5) {
-        OPRINT("[RTP DEBUG] send_rtp_packet called: frame_size=%zu, subsamp=%d, type=%d, is_rtp_format=%d\n",
-               frame->rtp_payload_size, frame->subsamp, frame->jpeg_type, frame->is_rtp_format);
-    }
 
     if (!client || !frame || !frame->rtp_payload || frame->rtp_payload_size <= 0) {
         OPRINT("[RTP ERROR] invalid frame data for transmission\n");
@@ -441,24 +449,19 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
         return -1;
     }
 
-    /* Fragment and send scan-only payload per RFC 2435 (no SOI/EOI in payload) */
-    const unsigned char *jpeg_data = frame->rtp_payload;   /* points to scan data */
-    size_t jpeg_size = frame->rtp_payload_size;            /* scan length */
+    const unsigned char *jpeg_data = frame->rtp_payload;
+    size_t jpeg_size = frame->rtp_payload_size;
     size_t fragment_offset = 0;
     size_t remaining = jpeg_size;
     uint16_t seq = client->sequence_number;
     int is_tcp = (client->rtp_port == 0);
     size_t max_packet_size = is_tcp ? MAX_TCP_PACKET_SIZE : MAX_RTP_PACKET_SIZE;
-    /* Q=255 if quantization tables are cached and 8-bit AND will be inserted, else 75 */
-    /* Use tables from frame structure (not global cache) to avoid race condition */
     const uint8_t *qt_luma = frame->have_luma ? frame->qt_luma : NULL;
     const uint8_t *qt_chroma = frame->have_chroma ? frame->qt_chroma : NULL;
     int have_luma = frame->have_luma;
     int have_chroma = frame->have_chroma;
     int qt_precision = frame->qt_precision;
-    /* qt_insertion_enabled and q_value_fixed already initialized at function start */
 
-    /* Calculate width/8 and height/8 with safe rounding up (ceil) */
     int frame_width_div8 = (frame->width + 7) / 8;
     int frame_height_div8 = (frame->height + 7) / 8;
     if (frame_width_div8 <= 0 || frame_height_div8 <= 0 || frame_width_div8 > 255 || frame_height_div8 > 255) {
@@ -470,7 +473,7 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
     const unsigned char jpeg_type_fixed = (unsigned char)frame->jpeg_type;
 
     while (remaining > 0) {
-        size_t total_header_size = 20; /* 12 RTP + 8 JPEG header */
+        size_t total_header_size = 20;
         if (total_header_size >= max_packet_size) {
             OPRINT("[RTP ERROR] header size %zu exceeds packet size limit %zu\n", total_header_size, max_packet_size);
             return -1;
@@ -482,19 +485,11 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
             return -1;
         }
 
-        /* Calculate QT header length if needed (for first fragment with Q=255) */
-        /* CRITICAL: Must be calculated BEFORE payload_size calculation */
-        /* We calculate it here, but actual building happens later after packet creation */
         size_t qt_hdr_len = 0;
         if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
-            /* Calculate QT header size: MBZ(1) + Precision(1) + Length(2) + QT data (64+64=128) */
-            /* GStreamer style: no Tq bytes, just QT tables in natural order */
-            qt_hdr_len = 4 + 128; /* MBZ + Precision + Length + QT data (luma + chroma) */
+            qt_hdr_len = 4 + 128;
         }
 
-        /* Calculate payload size: reduce by qt_hdr_len if QT header will be inserted */
-        /* CRITICAL: payload_size must be reduced by qt_hdr_len in first fragment to make room for QT header */
-        /* CRITICAL: Ensure max_scan_payload is not negative */
         size_t max_scan_payload = (qt_hdr_len < max_payload) ? (max_payload - qt_hdr_len) : 0;
         if (max_scan_payload == 0 && qt_hdr_len > 0) {
             OPRINT("[RTP ERROR] QT header too large: qt_hdr_len=%zu, max_payload=%zu\n", qt_hdr_len, max_payload);
@@ -523,124 +518,71 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
         packet[10] = (RTP_SSRC >> 8) & 0xFF;
         packet[11] = RTP_SSRC & 0xFF;
         
-        /* 8‑byte JPEG header */
-        /* CRITICAL: fragment_offset in JPEG header (bytes 13-15) counts ONLY scan data, NOT QT header */
-        /* This is correct - fragment_offset is already set to scan data offset */
-        packet[12] = 0;                                      /* Type‑specific */
-        packet[13] = (fragment_offset >> 16) & 0xFF;         /* off[23:16] */
-        packet[14] = (fragment_offset >> 8) & 0xFF;          /* off[15:8]  */
-        packet[15] = fragment_offset & 0xFF;                 /* off[7:0]   */
-        packet[16] = jpeg_type_fixed;                        /* Type */
-        packet[17] = (unsigned char)q_value_fixed;           /* Q (75 when QT disabled, 255 when QT enabled) */
-        packet[18] = (unsigned char)frame_width_div8;        /* Width/8 */
-        packet[19] = (unsigned char)frame_height_div8;       /* Height/8 */
+        packet[12] = 0;
+        packet[13] = (fragment_offset >> 16) & 0xFF;
+        packet[14] = (fragment_offset >> 8) & 0xFF;
+        packet[15] = fragment_offset & 0xFF;
+        packet[16] = jpeg_type_fixed;
+        packet[17] = (unsigned char)q_value_fixed;
+        packet[18] = (unsigned char)frame_width_div8;
+        packet[19] = (unsigned char)frame_height_div8;
         
         size_t payload_offset = 20;
         
-        /* CRITICAL: QT header must fit in first packet */
-        /* Check: payload_offset (20) + qt_hdr_len <= max_packet_size - 12 (TCP wrapper) */
         if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
             if (payload_offset + qt_hdr_len > max_packet_size - 12) {
                 OPRINT("[RTP WARNING] QT header too large for packet: qt_hdr_len=%zu, max_packet_size=%zu, falling back to Q=75\n",
                        qt_hdr_len, max_packet_size);
                 q_value_fixed = 75;
                 qt_hdr_len = 0;
-                /* Update Q value in packet header */
                 packet[17] = (unsigned char)q_value_fixed;
             }
         }
         
-        /* Build and insert QT header if needed (for first fragment with Q=255) */
         if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
-            /* Quantization Table Header (GStreamer style - RFC 2435 Section 3.1.8)
-             * Use QT tables in NATURAL order (as in DQT), no zigzag conversion
-             * No Tq bytes before each table - just copy QT data directly
-             */
-            
-            /* Validate: check for zeros in QT tables */
             int found_zero = 0;
             for (int i = 0; i < 64; i++) {
                 if (!frame->qt_luma[i] || !frame->qt_chroma[i]) {
                     found_zero = 1;
-                    static int zero_log_count = 0;
-                    if (zero_log_count++ < 3) {
-                        OPRINT("[RTP WARNING] Found zero in QT table (luma[%d]=%d, chroma[%d]=%d), falling back to Q=75\n",
-                               i, frame->qt_luma[i], i, frame->qt_chroma[i]);
-                    }
+                    OPRINT("[RTP WARNING] Found zero in QT table (luma[%d]=%d, chroma[%d]=%d), falling back to Q=75\n",
+                           i, frame->qt_luma[i], i, frame->qt_chroma[i]);
                     break;
                 }
             }
             
-            /* Fallback to Q=75 if zero found */
             if (found_zero) {
                 q_value_fixed = 75;
                 qt_hdr_len = 0;
-                /* Update Q value in packet header */
                 packet[17] = (unsigned char)q_value_fixed;
-                static int qt_fallback_log_count = 0;
-                if (qt_fallback_log_count++ < 3) {
-                    OPRINT("[RTP WARNING] QT disabled, fallback Q=75 - zero found in QT tables\n");
-                }
+                OPRINT("[RTP WARNING] QT disabled, fallback Q=75 - zero found in QT tables\n");
             } else {
-                /* Build QT header: MBZ(1) + Precision(1) + Length(2) + QT data (64+64=128) */
-                /* GStreamer style: no Tq bytes, just QT tables in natural order */
-                size_t qt_hdr_len_calc = 4 + 128; /* MBZ + Precision + Length + QT data */
+                size_t qt_hdr_len_calc = 4 + 128;
                 
-                /* Check that QT header fits in first packet */
                 if (20 + qt_hdr_len_calc >= max_packet_size) {
                     q_value_fixed = 75;
                     qt_hdr_len = 0;
-                    /* Update Q value in packet header */
                     packet[17] = (unsigned char)q_value_fixed;
-                    static int qt_fallback_log_count = 0;
-                    if (qt_fallback_log_count++ < 3) {
-                        OPRINT("[RTP WARNING] QT disabled, fallback Q=75 - QT header too large\n");
-                    }
+                    OPRINT("[RTP WARNING] QT disabled, fallback Q=75 - QT header too large\n");
                 } else {
                     uint8_t qt_hdr[4 + 128];
                     size_t off = 0;
                     
-                    qt_hdr[off++] = 0x00;                 /* MBZ */
-                    qt_hdr[off++] = 0x00;                 /* Precision=0 (8-bit) */
-                    uint16_t Lq = 128;                    /* Length: size of QT data (64+64) */
+                    qt_hdr[off++] = 0x00;
+                    qt_hdr[off++] = 0x00;
+                    uint16_t Lq = 128;
                     qt_hdr[off++] = (Lq >> 8) & 0xFF;
                     qt_hdr[off++] = Lq & 0xFF;
-                    /* Copy QT tables directly in natural order (GStreamer style) */
                     simd_memcpy(qt_hdr + off, frame->qt_luma, 64);
                     off += 64;
                     simd_memcpy(qt_hdr + off, frame->qt_chroma, 64);
                     off += 64;
                     
-                    /* Verify QT header length */
                     if (off != qt_hdr_len_calc) {
                         OPRINT("[RTP ERROR] QT header length mismatch: calculated=%zu, actual=%zu\n", qt_hdr_len_calc, off);
                         return -1;
                     }
-                    
-                    /* Update qt_hdr_len for payload_size calculation */
                     qt_hdr_len = qt_hdr_len_calc;
                     
-                    /* DEBUG: Log QT header info (once per frame) */
-                    static int qt_pre_insert_log_count = 0;
-                    if (qt_pre_insert_log_count++ < 1) {
-                        OPRINT("[RTP QT PRE-INSERT] Lq=%04x (BE), luma[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x, chroma[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x\n",
-                               Lq, frame->qt_luma[0], frame->qt_luma[1], frame->qt_luma[2], frame->qt_luma[3],
-                               frame->qt_luma[4], frame->qt_luma[5], frame->qt_luma[6], frame->qt_luma[7],
-                               frame->qt_chroma[0], frame->qt_chroma[1], frame->qt_chroma[2], frame->qt_chroma[3],
-                               frame->qt_chroma[4], frame->qt_chroma[5], frame->qt_chroma[6], frame->qt_chroma[7]);
-                    }
-                    
-                    /* DIAGNOSTIC: Dump QT header separately */
-                    static int qt_hdr_dump_count = 0;
-                    if (qt_hdr_dump_count++ < 3) {
-                        const char *qt_hdr_dump_file = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/rtsp_diagnostics/qt_header.bin";
-                        FILE *qt_hdr_file = fopen(qt_hdr_dump_file, "wb");
-                        if (qt_hdr_file) {
-                            fwrite(qt_hdr, 1, qt_hdr_len, qt_hdr_file);
-                            fclose(qt_hdr_file);
-                            OPRINT("[RTP DIAG] Dumped QT header (%zu bytes) to %s\n", qt_hdr_len, qt_hdr_dump_file);
-                        }
-                    }
                     
                     /* Insert QT header into packet */
                     simd_memcpy(packet + payload_offset, qt_hdr, qt_hdr_len);
@@ -648,57 +590,14 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
             }
         }
         
-        /* Copy scan data to packet */
         if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255 && qt_hdr_len > 0) {
-            /* QT header already inserted, copy scan data after it */
             simd_memcpy(packet + payload_offset + qt_hdr_len, jpeg_data + fragment_offset, payload_size);
         } else {
-            /* No QT header - just copy scan data */
             simd_memcpy(packet + payload_offset, jpeg_data + fragment_offset, payload_size);
         }
         
-        /* Calculate packet size: RTP+JPEG headers (20) + QT header (if any) + scan data */
         size_t packet_size = payload_offset + qt_hdr_len + payload_size;
         
-        /* CRITICAL: Dump raw RTP packet BEFORE TCP wrapping for analysis */
-        static int raw_packet_dump_count = 0;
-        if (raw_packet_dump_count++ < 3 && fragment_offset == 0) {
-            OPRINT("[RTP DEBUG] raw_packet_dump_count=%d, fragment_offset=%zu, q_value_fixed=%d, packet_size=%zu\n", 
-                   raw_packet_dump_count, fragment_offset, q_value_fixed, packet_size);
-            const char *dump_bin = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/raw_rtp_packet.bin";
-            const char *dump_hex = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/raw_rtp_packet.hex";
-            FILE *dump_file = fopen(dump_bin, "wb");
-            if (dump_file) {
-                fwrite(packet, 1, packet_size, dump_file);
-                fclose(dump_file);
-                OPRINT("[RTP RAW DUMP] Dumped %zu bytes to %s\n", packet_size, dump_bin);
-                
-                FILE *hex_file = fopen(dump_hex, "w");
-                if (hex_file) {
-                    fprintf(hex_file, "Raw RTP packet (%zu bytes):\n", packet_size);
-                    fprintf(hex_file, "RTP Header (12 bytes):\n");
-                    for (int i = 0; i < 12 && i < packet_size; i++) {
-                        fprintf(hex_file, "%02x ", packet[i]);
-                    }
-                    fprintf(hex_file, "\n\nJPEG Header (8 bytes, offset 12):\n");
-                    for (int i = 12; i < 20 && i < packet_size; i++) {
-                        fprintf(hex_file, "%02x ", packet[i]);
-                    }
-                    fprintf(hex_file, "\n\nPayload (offset 20, first 200 bytes):\n");
-                    for (int i = 20; i < packet_size && i < 220; i++) {
-                        fprintf(hex_file, "%02x ", packet[i]);
-                        if ((i+1) % 16 == 0) fprintf(hex_file, "\n");
-                    }
-                    fprintf(hex_file, "\n");
-                    fclose(hex_file);
-                    OPRINT("[RTP RAW DUMP] Dumped hex to %s\n", dump_hex);
-                }
-            } else {
-                OPRINT("[RTP RAW DUMP] Failed to open %s: %s\n", dump_bin, strerror(errno));
-            }
-        }
-        
-        /* CRITICAL: Verify packet size is valid */
         if (packet_size > MAX_TCP_PACKET_SIZE) {
             OPRINT("[RTP ERROR] Packet size exceeds MAX_TCP_PACKET_SIZE: packet_size=%zu, MAX=%d\n", 
                    packet_size, MAX_TCP_PACKET_SIZE);
@@ -726,30 +625,21 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
 
         int sent = 0;
         if (is_tcp) {
-            /* Optimize: Use client index from caller instead of searching */
             static int tcp_nodelay_sockets_[MAX_CLIENTS] = {0};
             if (client_idx >= 0 && client_idx < MAX_CLIENTS && !tcp_nodelay_sockets_[client_idx]) {
                 int opt = 1; setsockopt(client->socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
                 tcp_nodelay_sockets_[client_idx] = 1;
             }
             unsigned char tcp_packet[4 + MAX_TCP_PACKET_SIZE];
-            tcp_packet[0] = '$'; tcp_packet[1] = 0; /* channel 0 */
+            tcp_packet[0] = '$'; tcp_packet[1] = 0;
             tcp_packet[2] = (packet_size >> 8) & 0xFF; tcp_packet[3] = packet_size & 0xFF;
             simd_memcpy(tcp_packet + 4, packet, packet_size);
             size_t to_send = 4 + packet_size; const unsigned char *ptr = tcp_packet;
-            
-            /* DEBUG: Log packet sending with QT header */
-            static int packet_send_log_count = 0;
-            if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255 && packet_send_log_count++ < 3) {
-                OPRINT("[RTP DEBUG] Sending packet with QT header: packet_size=%zu, tcp_packet_size=%zu, fragment_offset=%zu\n",
-                       packet_size, to_send, fragment_offset);
-            }
             
             while (to_send > 0) {
                 sent = send(client->socket, ptr, to_send, MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (sent <= 0) {
                     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        /* Check for connection errors - socket may be closed */
                         if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
                             OPRINT("Error sending RTP over TCP: %s (socket closed, packet_size=%zu)\n", strerror(errno), packet_size);
                             return -1;
@@ -758,8 +648,7 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
                         return -1; 
                     }
                     if (errno == EAGAIN || errno == EWOULDBLOCK) { 
-                        /* Socket buffer full - wait a bit and retry */
-                        usleep(1000); /* 1ms */
+                        usleep(1000);
                         continue; 
                     }
                     continue;
@@ -783,18 +672,205 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
 }
 
 /******************************************************************************
+Description.: Handle RTSP OPTIONS request
+Input Value.: client socket, CSeq
+Return Value: none
+******************************************************************************/
+static void handle_rtsp_options(int client_socket, int cseq) {
+    send_rtsp_response(client_socket, cseq, 200, "OK", 
+                      "Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN\r\n", NULL);
+}
+
+/******************************************************************************
+Description.: Handle RTSP DESCRIBE request
+Input Value.: client socket, CSeq, client address, input number
+Return Value: none
+******************************************************************************/
+static void handle_rtsp_describe(int client_socket, int cseq, struct sockaddr_in client_addr, int input_number) {
+    char sdp[512];
+    int width = 640, height = 480;
+    
+    if (sdp_dimensions_cached && cached_sdp_width > 0 && cached_sdp_height > 0) {
+        width = cached_sdp_width;
+        height = cached_sdp_height;
+    } else if (pglobal != NULL && input_number >= 0 && input_number < pglobal->incnt) {
+        int current_width = pglobal->in[input_number].width;
+        int current_height = pglobal->in[input_number].height;
+        
+        if (current_width > 0 && current_height > 0) {
+            cached_sdp_width = current_width;
+            cached_sdp_height = current_height;
+            sdp_dimensions_cached = 1;
+            width = cached_sdp_width;
+            height = cached_sdp_height;
+        }
+    }
+    
+    int fps = 30;
+    if (pglobal != NULL && input_number >= 0 && input_number < pglobal->incnt && pglobal->in[input_number].fps > 0) {
+        fps = pglobal->in[input_number].fps;
+    }
+    
+    snprintf(sdp, sizeof(sdp),
+             "v=0\r\n"
+             "o=- %d %d IN IP4 %s\r\n"
+             "s=MJPG-Streamer Stream\r\n"
+             "t=0 0\r\n"
+             "a=tool:MJPG-Streamer\r\n"
+             "m=video 0 RTP/AVP 26\r\n"
+             "c=IN IP4 0.0.0.0\r\n"
+             "b=AS:5000\r\n"
+             "a=control:track1\r\n"
+             "a=rtpmap:26 JPEG/90000\r\n"
+             "a=fmtp:26 width=%d;height=%d\r\n"
+             "a=framesize:26 %d-%d\r\n"
+             "a=framerate:%d\r\n",
+             (int)time(NULL), (int)time(NULL), inet_ntoa(client_addr.sin_addr), width, height, width, height, fps);
+    char headers[256];
+    build_sdp_headers(headers, sizeof(headers), strlen(sdp));
+    send_rtsp_response(client_socket, cseq, 200, "OK", headers, sdp);
+}
+
+/******************************************************************************
+Description.: Handle RTSP SETUP request
+Input Value.: client socket, CSeq, client address, request buffer
+Return Value: none
+******************************************************************************/
+static void handle_rtsp_setup(int client_socket, int cseq, struct sockaddr_in client_addr, char *request) {
+    int client_rtp_port = 0, client_rtcp_port = 0;
+    int use_tcp = 0;
+    int session_id = 123456;
+    
+    char *transport_line = strstr(request, "Transport:");
+    if (transport_line) {
+        if (strstr(transport_line, "RTP/AVP/TCP")) {
+            use_tcp = 1;
+        } else {
+            char *client_port = strstr(transport_line, "client_port=");
+            if (client_port) {
+                sscanf(client_port, "client_port=%d-%d", &client_rtp_port, &client_rtcp_port);
+                if (client_rtp_port > 0 && client_rtcp_port > 0) {
+                    use_tcp = 0;
+                }
+            }
+        }
+    }
+    
+    int i;
+    pthread_mutex_lock(&clients_mutex);
+    for (i = 0; i < MAX_CLIENTS; i++) {
+        if (!clients[i].active && (clients[i].socket == 0 || clients[i].socket == -1)) {
+            clients[i].active = 1;
+            clients[i].socket = client_socket;
+            clients[i].rtp_port = use_tcp ? 0 : client_rtp_port;
+            clients[i].rtcp_port = use_tcp ? 0 : client_rtcp_port;
+            clients[i].sequence_number = 0;
+            clients[i].timestamp = 0;
+            clients[i].addr = client_addr;
+            clients[i].playing = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&clients_mutex);
+    
+    if (i < MAX_CLIENTS) {
+        char headers[256];
+        char session_hdr[64];
+        build_session_header(session_hdr, sizeof(session_hdr), session_id);
+        if (use_tcp) {
+            snprintf(headers, sizeof(headers),
+                    "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
+                    "%s", session_hdr);
+        } else {
+            snprintf(headers, sizeof(headers),
+                    "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=5004-5005;source=%s\r\n"
+                    "%s",
+                    client_rtp_port, client_rtcp_port, inet_ntoa(client_addr.sin_addr), session_hdr);
+        }
+        send_rtsp_response(client_socket, cseq, 200, "OK", headers, NULL);
+    } else {
+        send_rtsp_response(client_socket, cseq, 503, "Service Unavailable", NULL, NULL);
+    }
+}
+
+/******************************************************************************
+Description.: Handle RTSP PLAY request
+Input Value.: client socket, CSeq, session ID, input number
+Return Value: none
+******************************************************************************/
+static void handle_rtsp_play(int client_socket, int cseq, int session_id, int input_number) {
+    int i = find_client_by_socket(client_socket);
+    
+    if (i >= 0) {
+        pthread_mutex_lock(&clients_mutex);
+        clients[i].playing = 1;
+        pthread_mutex_unlock(&clients_mutex);
+        OPRINT(" o: Client %d set to playing state (socket %d)\n", i, client_socket);
+    } else {
+        OPRINT("[RTSP ERROR] PLAY request but no matching client found for socket %d\n", client_socket);
+    }
+    
+    char headers[128];
+    build_session_header(headers, sizeof(headers), session_id);
+    send_rtsp_response(client_socket, cseq, 200, "OK", headers, NULL);
+    
+    if (pglobal && i >= 0) {
+        pthread_mutex_lock(&pglobal->in[input_number].db);
+        pthread_cond_broadcast(&pglobal->in[input_number].db_update);
+        pthread_mutex_unlock(&pglobal->in[input_number].db);
+    }
+}
+
+/******************************************************************************
+Description.: Handle RTSP PAUSE request
+Input Value.: client socket, CSeq, session ID
+Return Value: none
+******************************************************************************/
+static void handle_rtsp_pause(int client_socket, int cseq, int session_id) {
+    int i = find_client_by_socket(client_socket);
+    
+    if (i >= 0) {
+        pthread_mutex_lock(&clients_mutex);
+        clients[i].playing = 0;
+        pthread_mutex_unlock(&clients_mutex);
+    }
+    
+    char headers[128];
+    build_session_header(headers, sizeof(headers), session_id);
+    send_rtsp_response(client_socket, cseq, 200, "OK", headers, NULL);
+}
+
+/******************************************************************************
+Description.: Handle RTSP TEARDOWN request
+Input Value.: client socket, CSeq, session ID
+Return Value: none
+******************************************************************************/
+static void handle_rtsp_teardown(int client_socket, int cseq, int session_id) {
+    int i = find_client_by_socket(client_socket);
+    
+    if (i >= 0) {
+        pthread_mutex_lock(&clients_mutex);
+        clear_client(i);
+        pthread_mutex_unlock(&clients_mutex);
+        OPRINT(" o: Client %d cleaned up on TEARDOWN (socket %d)\n", i, client_socket);
+    }
+    
+    char headers[128];
+    build_session_header(headers, sizeof(headers), session_id);
+    send_rtsp_response(client_socket, cseq, 200, "OK", headers, NULL);
+}
+
+/******************************************************************************
 Description.: Handle RTSP request
 Input Value.: client socket, request buffer
 Return Value: 0 on success, -1 on error
 ******************************************************************************/
 static void handle_rtsp_request(int client_socket, struct sockaddr_in client_addr, char *request, int input_number) {
-    char response[1024];
     int cseq = 0;
-    int session_id = 123456;
+    const int session_id = 123456;
     char request_copy[4096];
     char *saveptr = NULL;
     
-    // Make a copy since strtok_r modifies the buffer
     strncpy(request_copy, request, sizeof(request_copy) - 1);
     request_copy[sizeof(request_copy) - 1] = '\0';
     
@@ -813,252 +889,26 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
     
     OPRINT(" o: RTSP request: %s %s %s\n", method, uri, version);
 
-    // Parse headers
     while ((line = strtok_r(NULL, "\r\n", &saveptr))) {
         if (strncmp(line, "CSeq:", 5) == 0) {
             cseq = atoi(line + 6);
         }
     }
-
+    
     if (strcmp(method, "OPTIONS") == 0) {
-        snprintf(response, sizeof(response),
-                 "RTSP/1.0 200 OK\r\n"
-                 "CSeq: %d\r\n"
-                 "Public: OPTIONS, DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN\r\n"
-                 "Server: MJPG-Streamer RTSP Server\r\n"
-                 "\r\n", cseq);
-        send(client_socket, response, strlen(response), 0);
+        handle_rtsp_options(client_socket, cseq);
     } else if (strcmp(method, "DESCRIBE") == 0) {
-        char sdp[512];
-        int width = 640, height = 480; // Default values
-        
-        /* CRITICAL: Always use cached dimensions for SDP - they are updated from actual JPEG frames */
-        /* This ensures SDP and RTP headers always match, preventing VLC flickering */
-        /* If cached dimensions are not set yet, try to get them from globals as fallback */
-        if (sdp_dimensions_cached && cached_sdp_width > 0 && cached_sdp_height > 0) {
-            /* Use cached dimensions from actual JPEG frames - guaranteed to match RTP headers */
-            width = cached_sdp_width;
-            height = cached_sdp_height;
-        } else if (pglobal != NULL && input_number >= 0 && input_number < pglobal->incnt) {
-            /* Fallback: use globals if cached dimensions are not set yet */
-            int current_width = pglobal->in[input_number].width;
-            int current_height = pglobal->in[input_number].height;
-            
-            if (current_width > 0 && current_height > 0) {
-                /* Cache dimensions from globals as initial value */
-                /* They will be updated from actual JPEG frames in stream_worker_thread */
-                cached_sdp_width = current_width;
-                cached_sdp_height = current_height;
-                sdp_dimensions_cached = 1;
-                width = cached_sdp_width;
-                height = cached_sdp_height;
-            }
-        }
-        
-        /* Get FPS from input plugin if available */
-        int fps = 30; /* default */
-        if (pglobal != NULL && input_number >= 0 && input_number < pglobal->incnt && pglobal->in[input_number].fps > 0) {
-            fps = pglobal->in[input_number].fps;
-        }
-        
-        snprintf(sdp, sizeof(sdp),
-                 "v=0\r\n"
-                 "o=- %d %d IN IP4 %s\r\n"
-                 "s=MJPG-Streamer Stream\r\n"
-                 "t=0 0\r\n"
-                 "a=tool:MJPG-Streamer\r\n"
-                 "m=video 0 RTP/AVP 26\r\n"
-                 "c=IN IP4 0.0.0.0\r\n"
-                 "b=AS:5000\r\n"
-                 "a=control:track1\r\n"
-                 "a=rtpmap:26 JPEG/90000\r\n"
-                 "a=fmtp:26 width=%d;height=%d\r\n"
-                 "a=framesize:26 %d-%d\r\n"
-                 "a=framerate:%d\r\n",
-                 (int)time(NULL), (int)time(NULL), inet_ntoa(client_addr.sin_addr), width, height, width, height, fps);
-        snprintf(response, sizeof(response),
-                 "RTSP/1.0 200 OK\r\n"
-                 "CSeq: %d\r\n"
-                 "Content-Type: application/sdp\r\n"
-                 "Content-Length: %zu\r\n"
-                 "Server: MJPG-Streamer RTSP Server\r\n"
-                 "\r\n"
-                 "%s",
-                 cseq, strlen(sdp), sdp);
-        send(client_socket, response, strlen(response), 0);
+        handle_rtsp_describe(client_socket, cseq, client_addr, input_number);
     } else if (strcmp(method, "SETUP") == 0) {
-        int client_rtp_port = 0, client_rtcp_port = 0;
-        int use_tcp = 0; /* Default to UDP, but use what client requests */
-        // Parse Transport header - use what client requests
-        char *transport_line = strstr(request, "Transport:");
-        if (transport_line) {
-            /* Check if client explicitly requested TCP */
-            if (strstr(transport_line, "RTP/AVP/TCP")) { 
-                use_tcp = 1;
-            } else {
-                /* Check if client explicitly requested UDP */
-            char *client_port = strstr(transport_line, "client_port=");
-            if (client_port) {
-                sscanf(client_port, "client_port=%d-%d", &client_rtp_port, &client_rtcp_port);
-                    if (client_rtp_port > 0 && client_rtcp_port > 0) {
-                        use_tcp = 0;
-                    }
-                }
-            }
-        }
-        
-        if (use_tcp) {
-            int i;
-            pthread_mutex_lock(&clients_mutex);
-            for (i = 0; i < MAX_CLIENTS; i++) {
-                /* Check if slot is free: both active must be 0 AND socket must be 0 or -1 */
-                if (!clients[i].active && (clients[i].socket == 0 || clients[i].socket == -1)) {
-                    clients[i].active = 1;
-                    clients[i].socket = client_socket;
-                    clients[i].rtp_port = 0; // TCP mode
-                    clients[i].rtcp_port = 0;
-                    clients[i].sequence_number = 0;
-                    /* Initialize timestamp at 0 - will increment from first frame */
-                    clients[i].timestamp = 0;
-                    clients[i].addr = client_addr;
-                    clients[i].playing = 0;
-                    break;
-                }
-            }
-            pthread_mutex_unlock(&clients_mutex);
-            if (i < MAX_CLIENTS) {
-                snprintf(response, sizeof(response),
-                         "RTSP/1.0 200 OK\r\n"
-                         "CSeq: %d\r\n"
-                         "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
-                         "Session: %d\r\n"
-                         "Server: MJPG-Streamer RTSP Server\r\n"
-                         "\r\n", cseq, session_id);
-            } else {
-                snprintf(response, sizeof(response),
-                         "RTSP/1.0 503 Service Unavailable\r\n"
-                         "CSeq: %d\r\n"
-                         "Server: MJPG-Streamer RTSP Server\r\n"
-                         "\r\n", cseq);
-            }
-        } else {
-            int i;
-            pthread_mutex_lock(&clients_mutex);
-            for (i = 0; i < MAX_CLIENTS; i++) {
-                /* Check if slot is free: both active must be 0 AND socket must be 0 or -1 */
-                if (!clients[i].active && (clients[i].socket == 0 || clients[i].socket == -1)) {
-                    clients[i].active = 1;
-                    clients[i].socket = client_socket;
-                    clients[i].rtp_port = client_rtp_port;
-                    clients[i].rtcp_port = client_rtcp_port;
-                    clients[i].sequence_number = 0;
-                    /* Initialize timestamp at 0 - will increment from first frame */
-                    clients[i].timestamp = 0;
-                    clients[i].addr = client_addr;
-                    clients[i].playing = 0;
-                    break;
-                }
-            }
-            pthread_mutex_unlock(&clients_mutex);
-            if (i < MAX_CLIENTS) {
-                snprintf(response, sizeof(response),
-                         "RTSP/1.0 200 OK\r\n"
-                         "CSeq: %d\r\n"
-                         "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=5004-5005;source=%s\r\n"
-                         "Session: %d\r\n"
-                         "Server: MJPG-Streamer RTSP Server\r\n"
-                         "\r\n", cseq, client_rtp_port, client_rtcp_port, inet_ntoa(client_addr.sin_addr), session_id);
-            } else {
-                snprintf(response, sizeof(response),
-                         "RTSP/1.0 503 Service Unavailable\r\n"
-                         "CSeq: %d\r\n"
-                         "Server: MJPG-Streamer RTSP Server\r\n"
-                         "\r\n", cseq);
-            }
-        }
-        send(client_socket, response, strlen(response), 0);
+        handle_rtsp_setup(client_socket, cseq, client_addr, request);
     } else if (strcmp(method, "PLAY") == 0) {
-        int i;
-        pthread_mutex_lock(&clients_mutex);
-        for (i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].active && clients[i].socket == client_socket) {
-                clients[i].playing = 1;
-                OPRINT(" o: Client %d set to playing state (socket %d)\n", i, client_socket);
-                break;
-            }
-        }
-        if (i < MAX_CLIENTS) {
-        } else {
-            OPRINT("[RTSP ERROR] PLAY request but no matching client found for socket %d\n", client_socket);
-        }
-        pthread_mutex_unlock(&clients_mutex);
-        /* Send PLAY response FIRST, then wake streaming thread */
-        /* This ensures client is ready to receive RTP packets before we start sending */
-        snprintf(response, sizeof(response),
-                 "RTSP/1.0 200 OK\r\n"
-                 "CSeq: %d\r\n"
-                 "Session: %d\r\n"
-                 "Server: MJPG-Streamer RTSP Server\r\n"
-                 "\r\n", cseq, session_id);
-        send(client_socket, response, strlen(response), 0);
-        /* Wake streaming thread AFTER PLAY response is sent */
-        /* This ensures client is ready to receive RTP packets */
-        /* Send immediately - delays may cause flickering in VLC */
-        if (pglobal && i < MAX_CLIENTS) {
-            pthread_mutex_lock(&pglobal->in[input_number].db);
-            pthread_cond_broadcast(&pglobal->in[input_number].db_update);
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
-        }
+        handle_rtsp_play(client_socket, cseq, session_id, input_number);
     } else if (strcmp(method, "PAUSE") == 0) {
-        int i;
-        pthread_mutex_lock(&clients_mutex);
-        for (i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].active && clients[i].socket == client_socket) {
-                clients[i].playing = 0;
-                break;
-            }
-        }
-        pthread_mutex_unlock(&clients_mutex);
-        snprintf(response, sizeof(response),
-                 "RTSP/1.0 200 OK\r\n"
-                 "CSeq: %d\r\n"
-                 "Session: %d\r\n"
-                 "Server: MJPG-Streamer RTSP Server\r\n"
-                 "\r\n", cseq, session_id);
-        send(client_socket, response, strlen(response), 0);
+        handle_rtsp_pause(client_socket, cseq, session_id);
     } else if (strcmp(method, "TEARDOWN") == 0) {
-        int i;
-        pthread_mutex_lock(&clients_mutex);
-        for (i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].active && clients[i].socket == client_socket) {
-                /* Fully cleanup client on TEARDOWN */
-                clients[i].active = 0;
-                clients[i].playing = 0;
-                clients[i].socket = 0;
-                clients[i].rtp_port = 0;
-                clients[i].rtcp_port = 0;
-                clients[i].sequence_number = 0;
-                clients[i].timestamp = 0;
-                memset(&clients[i].addr, 0, sizeof(clients[i].addr));
-                OPRINT(" o: Client %d cleaned up on TEARDOWN (socket %d)\n", i, client_socket);
-                break;
-            }
-        }
-        pthread_mutex_unlock(&clients_mutex);
-        snprintf(response, sizeof(response),
-                 "RTSP/1.0 200 OK\r\n"
-                 "CSeq: %d\r\n"
-                 "Session: %d\r\n"
-                 "Server: MJPG-Streamer RTSP Server\r\n"
-                 "\r\n", cseq, session_id);
-        send(client_socket, response, strlen(response), 0);
+        handle_rtsp_teardown(client_socket, cseq, session_id);
     } else {
-        snprintf(response, sizeof(response),
-                 "RTSP/1.0 400 Bad Request\r\n"
-                 "CSeq: %d\r\n"
-                 "Server: MJPG-Streamer RTSP Server\r\n"
-                 "\r\n", cseq);
-        send(client_socket, response, strlen(response), 0);
+        send_rtsp_response(client_socket, cseq, 400, "Bad Request", NULL, NULL);
     }
 }
 
@@ -1082,27 +932,14 @@ static int handle_http_snapshot(int client_socket) {
     
     if (snapshot_buffer == NULL || snapshot_size == 0) {
         pthread_mutex_unlock(&snapshot_mutex);
-        const char *error_response = 
-            "HTTP/1.0 503 Service Unavailable\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 19\r\n"
-            "\r\n"
-            "No frame available";
-        send(client_socket, error_response, strlen(error_response), 0);
+        send_http_error(client_socket, 503, "Service Unavailable", "text/plain", "No frame available");
         return -1;
     }
     
-    /* Allocate buffer for snapshot copy */
     unsigned char *snapshot_copy = malloc(snapshot_size);
     if (!snapshot_copy) {
         pthread_mutex_unlock(&snapshot_mutex);
-        const char *error_response = 
-            "HTTP/1.0 500 Internal Server Error\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 13\r\n"
-            "\r\n"
-            "Out of memory";
-        send(client_socket, error_response, strlen(error_response), 0);
+        send_http_error(client_socket, 500, "Internal Server Error", "text/plain", "Out of memory");
         return -1;
     }
     
@@ -1110,17 +947,8 @@ static int handle_http_snapshot(int client_socket) {
     size_t snapshot_size_copy = snapshot_size;
     pthread_mutex_unlock(&snapshot_mutex);
     
-    /* Send HTTP response with JPEG snapshot */
     char header[512];
-    snprintf(header, sizeof(header),
-        "HTTP/1.0 200 OK\r\n"
-        "Content-Type: image/jpeg\r\n"
-        "Content-Length: %zu\r\n"
-        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-        "Pragma: no-cache\r\n"
-        "Expires: 0\r\n"
-        "\r\n",
-        snapshot_size_copy);
+    build_http_headers(header, sizeof(header), 200, "OK", "image/jpeg", snapshot_size_copy);
     
     if (send(client_socket, header, strlen(header), 0) < 0) {
         free(snapshot_copy);
@@ -1156,27 +984,14 @@ static int handle_http_request(int client_socket, char *request) {
             pthread_mutex_lock(&snapshot_mutex);
             if (snapshot_buffer == NULL || snapshot_size == 0) {
                 pthread_mutex_unlock(&snapshot_mutex);
-                const char *error_response = 
-                    "HTTP/1.0 503 Service Unavailable\r\n"
-                    "Content-Type: text/plain\r\n"
-                    "Content-Length: 19\r\n"
-                    "\r\n";
-                send(client_socket, error_response, strlen(error_response), 0);
+                send_http_error(client_socket, 503, "Service Unavailable", "text/plain", "Service Unavailable");
                 return -1;
             }
             size_t size = snapshot_size;
             pthread_mutex_unlock(&snapshot_mutex);
             
             char header[512];
-            snprintf(header, sizeof(header),
-                "HTTP/1.0 200 OK\r\n"
-                "Content-Type: image/jpeg\r\n"
-                "Content-Length: %zu\r\n"
-                "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-                "Pragma: no-cache\r\n"
-                "Expires: 0\r\n"
-                "\r\n",
-                size);
+            build_http_headers(header, sizeof(header), 200, "OK", "image/jpeg", size);
             send(client_socket, header, strlen(header), 0);
             return 0;
         } else {
@@ -1186,13 +1001,7 @@ static int handle_http_request(int client_socket, char *request) {
     }
     
     /* Unknown HTTP request - return 404 */
-    const char *not_found = 
-        "HTTP/1.0 404 Not Found\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: 13\r\n"
-        "\r\n"
-        "Not Found";
-    send(client_socket, not_found, strlen(not_found), 0);
+    send_http_error(client_socket, 404, "Not Found", "text/plain", "Not Found");
     return -1;
 }
 
@@ -1258,14 +1067,7 @@ static void* handle_client_thread(void* arg) {
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].socket == client_socket) {
-            clients[i].socket = 0;
-            clients[i].rtp_port = 0;
-            clients[i].rtcp_port = 0;
-            clients[i].active = 0;
-            clients[i].playing = 0;
-            clients[i].timestamp = 0;
-            clients[i].sequence_number = 0;
-            memset(&clients[i].addr, 0, sizeof(clients[i].addr));
+            clear_client(i);
             OPRINT(" o: Client %d cleaned up (socket %d)\n", i, client_socket);
             break;
         }
@@ -1303,23 +1105,16 @@ void *rtsp_server_thread(void *arg)
             break;
         }
         
-        /* Set TCP_NODELAY to disable Nagle algorithm - send packets immediately */
-        /* This is critical for RTSP streaming to reduce startup delay */
         int flag = 1;
         if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) < 0) {
-            /* Failed to set TCP_NODELAY - non-critical, continue */
         }
-        /* Increase send buffer size for VLC - helps with stable streaming */
-        /* VLC may need larger buffer to handle packet bursts */
-        int send_buf_size = 256 * 1024; /* 256KB send buffer */
+        int send_buf_size = 256 * 1024;
         if (setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, &send_buf_size, sizeof(send_buf_size)) < 0) {
-            /* Failed to set SO_SNDBUF - non-critical, continue */
         }
         
         OPRINT("RTSP client connected from %s:%d\n", 
                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         
-        /* Handle each client in a separate thread */
         pthread_t client_thread;
         client_data_t *client_data = malloc(sizeof(client_data_t));
         if (!client_data) {
@@ -1360,32 +1155,24 @@ void *stream_worker_thread(void *arg)
     static unsigned int last_rtsp_sequence = UINT_MAX;
     
     while (!pglobal->stop && server_running) {
-        /* Wait for fresh frame or check current frame immediately after PLAY */
-        /* For new clients after PLAY, we want to send current frame immediately */
         pthread_mutex_lock(&pglobal->in[input_number].db);
         
-        /* Check if current frame is new (not processed yet) */
         unsigned int current_seq = pglobal->in[input_number].frame_sequence;
         int is_new_frame = (current_seq != last_rtsp_sequence) && 
                            (pglobal->in[input_number].size > 0);
         
         if (!is_new_frame) {
-            /* No new frame yet - wait for fresh frame using helper */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
             if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_rtsp_sequence)) {
-                /* wait_for_fresh_frame returns 0 only on error; mutex is unlocked */
-                usleep(1000); /* Small delay to prevent busy waiting */
+                usleep(1000);
                 continue;
             }
-            /* mutex is locked by wait_for_fresh_frame */
         } else {
-            /* Current frame is new - process it immediately (mutex already locked) */
             last_rtsp_sequence = current_seq;
         }
         
         frame_size = pglobal->in[input_number].size;
         
-        /* Allocate buffer if needed */
         if (use_static_buffers && frame_size <= MAX_FRAME_SIZE) {
             current_frame = static_frame_buffer;
         } else if (current_frame == NULL || frame_size > MAX_FRAME_SIZE) {
@@ -1398,11 +1185,9 @@ void *stream_worker_thread(void *arg)
             }
         }
         
-        /* Copy frame data while mutex is locked */
         if (current_frame && frame_size > 0 && pglobal->in[input_number].buf != NULL) {
             simd_memcpy(current_frame, pglobal->in[input_number].buf, frame_size);
             
-            /* Update snapshot buffer for HTTP /snapshot endpoint */
             pthread_mutex_lock(&snapshot_mutex);
             if (snapshot_buffer == NULL || snapshot_size < frame_size) {
                 if (snapshot_buffer) free(snapshot_buffer);
@@ -1418,16 +1203,13 @@ void *stream_worker_thread(void *arg)
             pthread_mutex_unlock(&snapshot_mutex);
         }
         
-        /* Allow others to access the global buffer again - like HTTP plugin */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
         
 
         pthread_mutex_lock(&clients_mutex);
         int playing_clients = 0;
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
-            int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-            if (clients[i].active && clients[i].playing && (is_tcp_client || is_udp_client)) {
+            if (is_valid_client(i)) {
                 playing_clients++;
             }
         }
@@ -1441,16 +1223,14 @@ void *stream_worker_thread(void *arg)
             continue;
         }
         
-        /* Use fixed timestamp increment from input plugin FPS - calculate once */
         static int cached_fps = 0;
         if (cached_fps == 0) {
-            /* Calculate from input plugin FPS */
-            int input_fps = 30; /* default */
+            int input_fps = 30;
             if (pglobal && input_number >= 0 && input_number < pglobal->incnt && pglobal->in[input_number].fps > 0) {
                 input_fps = pglobal->in[input_number].fps;
             }
             cached_fps = input_fps;
-            rtp_ts_increment = (uint32_t)(90000 / input_fps); /* 90kHz / fps */
+            rtp_ts_increment = (uint32_t)(90000 / input_fps);
         }
 
         rtp_jpeg_frame_t prepared_frame;
@@ -1463,10 +1243,8 @@ void *stream_worker_thread(void *arg)
             continue;
         }
 
-        /* Send to all active clients - optimized single pass through clients array */
         pthread_mutex_lock(&clients_mutex);
         
-        /* Cache SDP dimensions if needed */
         if (prepared_frame.width > 0 && prepared_frame.height > 0) {
             if (!sdp_dimensions_cached ||
                 (prepared_frame.width != cached_sdp_width || prepared_frame.height != cached_sdp_height)) {
@@ -1476,23 +1254,16 @@ void *stream_worker_thread(void *arg)
             }
         }
         
-        /* Single optimized pass: count, find base_timestamp, send packets, update timestamps */
         int clients_count = 0;
         playing_clients = 0;
         uint32_t base_timestamp = 0;
         
-        /* First pass: count playing clients and find base_timestamp */
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (!clients[i].active || !clients[i].playing) continue;
+            if (!is_valid_client(i)) continue;
             
-            int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
-            int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-            
-            if (is_tcp_client || is_udp_client) {
-                playing_clients++;
-                if (base_timestamp == 0 && clients[i].timestamp > 0) {
-                    base_timestamp = clients[i].timestamp;
-                }
+            playing_clients++;
+            if (base_timestamp == 0 && clients[i].timestamp > 0) {
+                base_timestamp = clients[i].timestamp;
             }
         }
         
@@ -1503,12 +1274,7 @@ void *stream_worker_thread(void *arg)
         /* Second pass: send packets to all playing clients */
         if (prepared_frame.rtp_payload != NULL && prepared_frame.rtp_payload_size > 0) {
             for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (!clients[i].active || !clients[i].playing) continue;
-                
-                int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
-                int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-                
-                if (!(is_tcp_client || is_udp_client)) continue;
+                if (!is_valid_client(i)) continue;
                 
                 /* Initialize timestamp if needed */
                 if (clients[i].timestamp == 0) {
@@ -1519,29 +1285,18 @@ void *stream_worker_thread(void *arg)
                     }
                 }
                 
-                /* Send RTP packet - pass client index for optimization */
                 int send_result = send_rtp_packet(rtp_socket, &clients[i], &prepared_frame, clients[i].timestamp, i);
                 if (send_result < 0) {
                     OPRINT("[RTP ERROR] Failed to send RTP packet to client %d (socket %d, active=%d, playing=%d)\n", 
                            i, clients[i].socket, clients[i].active, clients[i].playing);
-                    /* Mark client as inactive if send fails - socket may be closed */
                     if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
-                        /* Fully cleanup client on send error */
-                        int old_socket = clients[i].socket; /* Save socket before cleanup */
-                        clients[i].active = 0;
-                        clients[i].playing = 0;
-                        clients[i].socket = 0;
-                        clients[i].rtp_port = 0;
-                        clients[i].rtcp_port = 0;
-                        clients[i].sequence_number = 0;
-                        clients[i].timestamp = 0;
-                        memset(&clients[i].addr, 0, sizeof(clients[i].addr));
+                        int old_socket = clients[i].socket;
+                        clear_client(i);
                         OPRINT(" o: Client %d cleaned up on send error (socket %d)\n", i, old_socket);
-                        continue; /* Skip timestamp update for disconnected client */
+                        continue;
                     }
                 }
                 
-                /* Update timestamp for successfully sent packet */
                 if (send_result >= 0) {
                     clients[i].timestamp += rtp_ts_increment;
                     clients_count++;
@@ -1579,12 +1334,9 @@ int output_init(output_parameter *param, int id)
 {
     int port = 554;
     
-    /* Initialize global variables */
     pglobal = param->global;
     input_number = param->id;
     
-    /* Parse parameters */
-    /* Parameters are already parsed by mjpg_streamer main */
     if (param->argv && param->argc > 0) {
         for (int i = 0; i < param->argc; i++) {
             if (param->argv[i] && (!strcmp(param->argv[i], "-h") || !strcmp(param->argv[i], "--help"))) {
@@ -1656,22 +1408,13 @@ int output_init(output_parameter *param, int id)
         return -1;
     }
     
-    /* Initialize clients */
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        clients[i].active = 0;
+        clear_client(i);
         clients[i].socket = -1;
-        clients[i].rtp_port = 0;
-        clients[i].rtcp_port = 0;
-        clients[i].sequence_number = 0;
-        clients[i].timestamp = 0;
-        memset(&clients[i].addr, 0, sizeof(clients[i].addr));
     }
     
     OPRINT("RTSP server initialized on port %d\n", port);
     OPRINT("Input plugin: %d\n", input_number);
-
-    /* DEBUG: Log server socket status */
-    OPRINT("[RTSP DEBUG] Server socket created: fd=%d\n", server_socket);
 
     return 0;
 }
@@ -1685,16 +1428,12 @@ int output_stop(int id)
 {
     server_running = 0;
     
-    /* Close all client connections */
     pthread_mutex_lock(&clients_mutex);
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].active) {
             close(clients[i].socket);
-            clients[i].active = 0;
+            clear_client(i);
             clients[i].socket = -1;
-            clients[i].rtp_port = 0;
-            clients[i].rtcp_port = 0;
-            memset(&clients[i].addr, 0, sizeof(clients[i].addr));
         }
     }
     pthread_mutex_unlock(&clients_mutex);
