@@ -1025,6 +1025,8 @@ void *worker_thread(void *arg)
         /* Calculate motion level using pixel-by-pixel comparison */
         motion_level = calculate_motion_level(current_scaled_frame, prev_frame, scaled_width, scaled_height);
         
+        DBG("motion level: %.2f%%, threshold: %d%%, overload: %d%%, sequence: %d/%d\n", 
+            motion_level, brightness_threshold, overload_threshold, motion_sequence_count, sequence_frames);
 
         /* Check motion level and handle sequence-based detection */
         if(motion_level >= overload_threshold) {
@@ -1072,6 +1074,8 @@ void *worker_thread(void *arg)
                     /* Reset sequence counter after sending webhook to require new sequence for next motion event */
                     motion_sequence_count = 0;
                 }
+                /* If cooldown not passed, keep sequence_count but don't send webhook */
+                /* Don't reset sequence_count here - let it continue growing until cooldown passes */
             }
             /* Update previous frame to prevent accumulation */
             simd_memcpy(prev_frame, current_scaled_frame, scaled_width * scaled_height);
