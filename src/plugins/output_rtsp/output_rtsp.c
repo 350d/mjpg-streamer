@@ -11,7 +11,6 @@
 #include <limits.h>
 #include <errno.h>
 #include <sys/time.h>
-#include <fcntl.h>
 
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
@@ -1355,8 +1354,6 @@ void *stream_worker_thread(void *arg)
 {
     int frame_size = 0;
     unsigned char *current_frame = NULL;
-    static unsigned int last_sequence = UINT_MAX;
-    static struct timeval last_tv = {0};
     
     OPRINT("RTSP stream worker started\n");
     
