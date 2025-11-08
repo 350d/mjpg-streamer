@@ -128,9 +128,11 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
         free(rgb_buffer);
     } else if (vd->formatIn == V4L2_PIX_FMT_MJPEG || vd->formatIn == V4L2_PIX_FMT_JPEG) {
         /* Already JPEG - just copy */
-        if (vd->framebuffer && vd->sizeIn > 0 && vd->sizeIn <= size) {
-            memcpy(buffer, vd->framebuffer, vd->sizeIn);
-            jpeg_size = vd->sizeIn;
+        /* Use tmpbytesused for actual frame size (JPEG size varies per frame) */
+        int frame_size = (vd->tmpbytesused > 0) ? vd->tmpbytesused : vd->framesizeIn;
+        if (vd->framebuffer && frame_size > 0 && frame_size <= size) {
+            memcpy(buffer, vd->framebuffer, frame_size);
+            jpeg_size = frame_size;
             result = 0;
         }
     }
