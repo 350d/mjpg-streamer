@@ -27,6 +27,18 @@
 #define MAX_TCP_PACKET_SIZE 8192  // Larger packet size for TCP to reduce fragmentation
 #define MAX_FRAME_SIZE (10 * 1024 * 1024)  // 10MB max frame size
 
+/* RFC 2435 zigzag order (as in FFmpeg libavformat/rtpenc_jpeg.c) */
+static const uint8_t rfc2435_zigzag[64] = {
+    0,  1,  5,  6, 14, 15, 27, 28,
+    2,  4,  7, 13, 16, 26, 29, 42,
+    3,  8, 12, 17, 25, 30, 41, 43,
+    9, 11, 18, 24, 31, 40, 44, 53,
+   10, 19, 23, 32, 39, 45, 52, 54,
+   20, 22, 33, 38, 46, 51, 55, 60,
+   21, 34, 37, 47, 50, 56, 59, 61,
+   35, 36, 48, 49, 57, 58, 62, 63
+};
+
 typedef struct {
     int socket;
     int active;
@@ -65,29 +77,34 @@ static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 
 typedef struct {
-    unsigned char *baseline_jpeg;      /* recompressed JPEG with default DHT (tjFree) */
-    unsigned long baseline_size;
+    unsigned char *rtp_payload;        /* RTP/JPEG payload (JPEG header + optional QT + scan data) or full JPEG */
+    size_t rtp_payload_size;           /* Size of RTP payload */
     int width;
     int height;
     int subsamp;                       /* TurboJPEG subsampling (TJSAMP_*) */
     int jpeg_type;                     /* RFC2435 type (0/1/3) */
+    int is_rtp_format;                 /* 1 = RTP/JPEG format (no SOI/EOI), 0 = full JPEG format */
+    /* Quantization tables for this frame (to avoid race condition with global cache) */
+    uint8_t qt_luma[64];
+    uint8_t qt_chroma[64];
+    int have_luma;
+    int have_chroma;
+    int qt_precision;                  /* 0 = 8-bit, 1 = 16-bit */
 } rtp_jpeg_frame_t;
 
 static void free_rtp_jpeg_frame(rtp_jpeg_frame_t *frame);
 static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_size,
                                   rtp_jpeg_frame_t *frame_info);
 
-
-
 static void free_rtp_jpeg_frame(rtp_jpeg_frame_t *frame)
 {
     if (!frame) {
         return;
     }
-    if (frame->baseline_jpeg) {
-        tjFree(frame->baseline_jpeg);
-        frame->baseline_jpeg = NULL;
-        frame->baseline_size = 0;
+    if (frame->rtp_payload) {
+        free(frame->rtp_payload);
+        frame->rtp_payload = NULL;
+        frame->rtp_payload_size = 0;
     }
 }
 
@@ -99,7 +116,41 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
     }
 
     memset(frame_info, 0, sizeof(*frame_info));
+    
+    /* DEBUG: Check if input JPEG already contains duplicate EOI or next JPEG frame */
+    static int input_check_count = 0;
+    if (input_check_count++ < 3) {
+        /* Find first EOI in input JPEG */
+        size_t first_eoi = 0;
+        for (size_t i = 1; i < jpeg_size; ) {
+            if (jpeg_data[i-1] == 0xFF && jpeg_data[i] == 0xD9) {
+                first_eoi = i + 1; /* Position after first EOI */
+                break;
+            } else if (jpeg_data[i-1] == 0xFF && jpeg_data[i] == 0x00) {
+                i += 2;
+                continue;
+            } else {
+                i++;
+            }
+        }
+        OPRINT("[RTP DEBUG] Input JPEG: size=%zu, first_eoi=%zu\n", jpeg_size, first_eoi);
+        if (first_eoi > 0 && first_eoi < jpeg_size) {
+            unsigned char next1 = jpeg_data[first_eoi];
+            unsigned char next2 = jpeg_data[first_eoi + 1];
+            OPRINT("[RTP DEBUG] Input JPEG: bytes after first EOI (offset %zu): 0x%02X 0x%02X\n",
+                   first_eoi, next1, next2);
+            if (next1 == 0xFF && (next2 == 0xD9 || next2 == 0xD8)) {
+                OPRINT("[RTP DEBUG] Input JPEG ALREADY contains duplicate EOI or next JPEG after first EOI!\n");
+            }
+        } else if (first_eoi == 0) {
+            OPRINT("[RTP DEBUG] Input JPEG: EOI not found!\n");
+        } else if (first_eoi >= jpeg_size) {
+            OPRINT("[RTP DEBUG] Input JPEG: first EOI at end of JPEG (first_eoi=%zu, jpeg_size=%zu)\n", 
+                   first_eoi, jpeg_size);
+        }
+    }
 
+    /* Get dimensions and subsampling from input JPEG */
     int input_width = 0;
     int input_height = 0;
     int input_subsamp = -1;
@@ -108,61 +159,208 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         return -1;
     }
 
-    /* Try to enforce 4:2:2 when possible (even width). Otherwise keep original subsampling. */
-    int desired_subsamp = TJSAMP_422;
-    if ((input_width % 2) != 0) {
-        desired_subsamp = input_subsamp; /* Cannot use 4:2:2 on odd width frames */
-    }
-    if (desired_subsamp < 0) {
-        desired_subsamp = input_subsamp >= 0 ? input_subsamp : TJSAMP_422;
-    }
-
-    unsigned char *baseline = NULL;
-    unsigned long baseline_size = 0;
-    if (recompress_jpeg_to_baseline_with_default_dht(jpeg_data, (int)jpeg_size,
-                                                     &baseline, &baseline_size,
-                                                     75, desired_subsamp) != 0 || !baseline || baseline_size == 0) {
-        OPRINT("[RTP ERROR] Failed to recompress JPEG to baseline/default DHT\n");
+    /* Trim JPEG to first EOI to remove any padding - handle escape sequences */
+    /* CRITICAL: Must find FIRST EOI (not last) and trim strictly to it (including EOI, excluding anything after) */
+    /* Search from SOI (0xFF 0xD8) to find first EOI (0xFF 0xD9) */
+    size_t eoi_pos = jpeg_size;
+    
+    /* First, find SOI to ensure we're searching within a valid JPEG */
+    size_t soi_pos = 0;
+    if (jpeg_size < 2 || jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
+        OPRINT("[RTP ERROR] JPEG does not start with SOI (0xFF 0xD8)\n");
         return -1;
     }
-
-    /* CRITICAL: Trim JPEG to exact size - find last EOI marker (0xFF 0xD9) */
-    /* TurboJPEG may return size with padding/extra bytes after EOI, causing "overread 8" in decoder */
-    /* "overread 8" occurs when decoder reads scan data and goes 8 bytes beyond EOI */
-    size_t trimmed_size = baseline_size;
+    soi_pos = 0;
     
-    /* Find last EOI marker (0xFF 0xD9) - search backwards from end */
-    for (int i = (int)baseline_size - 2; i >= 0; i--) {
-        if (baseline[i] == 0xFF && baseline[i + 1] == 0xD9) {
-            trimmed_size = (size_t)(i + 2); /* Include EOI marker (0xFF 0xD9) */
-            break;
+    /* Search for first EOI after SOI - handle escape sequences (0xFF 0x00) in scan data */
+    for (size_t i = soi_pos + 2; i < jpeg_size; ) {
+        if (jpeg_data[i-1] == 0xFF) {
+            if (jpeg_data[i] == 0xD9) {
+                /* Found FIRST EOI marker - eoi_pos points to position AFTER EOI (i + 1) */
+                /* This means EOI is at positions (i-1, i) = (eoi_pos-2, eoi_pos-1) */
+                eoi_pos = i + 1;
+                break; /* CRITICAL: Break on FIRST EOI, not last */
+            } else if (jpeg_data[i] == 0x00) {
+                /* Escape sequence in scan data - skip both bytes */
+                i += 2;
+                continue;
+            } else {
+                i++;
+            }
+        } else {
+            i++;
         }
     }
     
-    if (trimmed_size < baseline_size) {
-        frame_info->baseline_size = trimmed_size;
-    } else {
-        frame_info->baseline_size = baseline_size;
+    /* CRITICAL: Verify that bytes immediately after EOI are not duplicate EOI or SOI */
+    /* This prevents including duplicate EOI or next JPEG frame in the payload */
+    /* eoi_pos points to position AFTER EOI, so bytes at eoi_pos and eoi_pos+1 are after EOI */
+    if (eoi_pos < jpeg_size) {
+        if (eoi_pos + 1 < jpeg_size && jpeg_data[eoi_pos] == 0xFF) {
+            unsigned char next_byte = jpeg_data[eoi_pos + 1];
+            if (next_byte == 0xD9 || next_byte == 0xD8) {
+                /* Duplicate EOI or next JPEG SOI found - trim strictly to first EOI */
+                /* eoi_pos already set correctly above (i + 1) - this is the position AFTER first EOI */
+                /* We will copy eoi_pos bytes, which includes EOI at (eoi_pos-2, eoi_pos-1) */
+            }
+        }
     }
-    frame_info->baseline_jpeg = baseline;
-
-    if (turbojpeg_header_info(frame_info->baseline_jpeg, (int)frame_info->baseline_size,
-                              &frame_info->width, &frame_info->height, &frame_info->subsamp) != 0) {
-        OPRINT("[RTP ERROR] Failed to read header of recompressed JPEG\n");
-        free_rtp_jpeg_frame(frame_info);
+    
+    /* CRITICAL: Verify that eoi_pos points to position after EOI, and EOI is at (eoi_pos-2, eoi_pos-1) */
+    if (eoi_pos < 2 || eoi_pos > jpeg_size) {
+        OPRINT("[RTP ERROR] Invalid EOI position: eoi_pos=%zu, jpeg_size=%zu\n", eoi_pos, jpeg_size);
+        return -1;
+    }
+    if (jpeg_data[eoi_pos - 2] != 0xFF || jpeg_data[eoi_pos - 1] != 0xD9) {
+        OPRINT("[RTP ERROR] EOI marker not found at expected position: eoi_pos=%zu\n", eoi_pos);
+        return -1;
+    }
+    
+    /* Verify no non-padding data after EOI */
+    size_t check_pos = eoi_pos;
+    while (check_pos < jpeg_size && (jpeg_data[check_pos] == 0x00 || jpeg_data[check_pos] == 0xFF)) {
+        check_pos++;
+    }
+    if (check_pos < jpeg_size) {
+        /* Non-padding data found after EOI - truncate at first EOI */
+        /* eoi_pos already set correctly above */
+    }
+    
+    /* Locate Start of Scan (SOS) marker and extract only entropy-coded scan */
+    size_t sos_pos = 0, scan_start = 0;
+    for (size_t i = soi_pos + 2; i + 3 < jpeg_size; ) {
+        if (jpeg_data[i] == 0xFF && jpeg_data[i + 1] == 0xDA) {
+            sos_pos = i;
+            break;
+        }
+        if (jpeg_data[i] == 0xFF && jpeg_data[i + 1] == 0x00) {
+            i += 2;
+            continue;
+        }
+        i++;
+    }
+    if (sos_pos == 0) {
+        OPRINT("[RTP ERROR] SOS not found in JPEG\n");
+        return -1;
+    }
+    if (sos_pos + 3 >= jpeg_size) {
+        OPRINT("[RTP ERROR] SOS header truncated\n");
+        return -1;
+    }
+    uint16_t sos_len = ((uint16_t)jpeg_data[sos_pos + 2] << 8) | (uint16_t)jpeg_data[sos_pos + 3];
+    if (sos_pos + 2 + sos_len > jpeg_size) {
+        OPRINT("[RTP ERROR] SOS segment length exceeds JPEG size (sos_len=%u)\n", sos_len);
+        return -1;
+    }
+    scan_start = sos_pos + 2 + sos_len;
+    if (scan_start >= jpeg_size || scan_start > eoi_pos - 2) {
+        OPRINT("[RTP ERROR] Invalid scan_start computed (scan_start=%zu, eoi_pos=%zu)\n", scan_start, eoi_pos);
         return -1;
     }
 
-    /* RFC 2435, Table: Types 0-7 (without restart)
-     * Type 0 = 4:2:2, Type 1 = 4:2:0, Type 2 = 4:1:1, Type 3 = 4:4:4
+    /* Copy only entropy-coded scan data (exclude SOI..SOS headers and EOI) */
+    size_t scan_len = (eoi_pos - 2) - scan_start;
+    if (scan_len == 0) {
+        OPRINT("[RTP ERROR] Empty scan segment\n");
+        return -1;
+    }
+    unsigned char *scan_only = (unsigned char *)malloc(scan_len);
+    if (!scan_only) {
+        OPRINT("[RTP ERROR] Failed to allocate scan buffer (%zu bytes)\n", scan_len);
+        return -1;
+    }
+    simd_memcpy(scan_only, jpeg_data + scan_start, scan_len);
+    if (scan_len >= 2 && scan_only[scan_len - 2] == 0xFF && scan_only[scan_len - 1] == 0xD9) {
+        free(scan_only);
+        OPRINT("[RTP ERROR] Scan buffer ends with EOI unexpectedly\n");
+        return -1;
+    }
+
+    /* Store scan-only payload for RTP transmission */
+    frame_info->rtp_payload = scan_only;
+    frame_info->rtp_payload_size = scan_len;
+    frame_info->is_rtp_format = 1;
+    frame_info->width = input_width;
+    frame_info->height = input_height;
+    frame_info->subsamp = input_subsamp;
+
+               /* RFC 2435, Table: Types 0-7 (without restart)
+                * Type 0 = 4:2:2, Type 1 = 4:2:0, Type 2 = 4:1:1, Type 3 = 4:4:4
+                * CRITICAL: Correct subsampling mapping for color stability
+                */
+               switch (frame_info->subsamp) {
+                   case TJSAMP_422: frame_info->jpeg_type = 0; break; /* 4:2:2 -> Type 0 */
+                   case TJSAMP_420: frame_info->jpeg_type = 1; break; /* 4:2:0 -> Type 1 */
+                   case TJSAMP_411: frame_info->jpeg_type = 2; break; /* 4:1:1 -> Type 2 */
+                   case TJSAMP_444: frame_info->jpeg_type = 3; break; /* 4:4:4 -> Type 3 */
+                   case TJSAMP_440: 
+                       /* RFC 2435 doesn't support 4:4:0 - force to 4:2:0 (Type 1) */
+                       OPRINT("[RTP WARNING] TJSAMP_440 (4:4:0) not supported by RFC 2435, mapping to Type 1 (4:2:0)\n");
+                       frame_info->jpeg_type = 1; 
+                       break;
+                   case TJSAMP_GRAY:
+                       /* Grayscale - RFC 2435 doesn't explicitly support it */
+                       OPRINT("[RTP WARNING] TJSAMP_GRAY (grayscale) - using Type 3 (4:4:4) temporarily\n");
+                       frame_info->jpeg_type = 3;
+                       break;
+                   default:
+                       OPRINT("[RTP WARNING] Unknown subsampling %d, defaulting to Type 0 (4:2:2)\n", frame_info->subsamp);
+                       frame_info->jpeg_type = 0; /* fallback: 4:2:2 */
+                       break;
+               }
+
+               /* DEBUG: Log subsampling and type mapping */
+               static int subsamp_log_count = 0;
+               if (subsamp_log_count++ < 10) {
+                   const char *subsamp_name = "UNKNOWN";
+                   switch (frame_info->subsamp) {
+                       case TJSAMP_420: subsamp_name = "4:2:0"; break;
+                       case TJSAMP_422: subsamp_name = "4:2:2"; break;
+                       case TJSAMP_444: subsamp_name = "4:4:4"; break;
+                       case TJSAMP_440: subsamp_name = "4:4:0"; break;
+                       case TJSAMP_411: subsamp_name = "4:1:1"; break;
+                       case TJSAMP_GRAY: subsamp_name = "GRAY"; break;
+                       default: break;
+                   }
+                   OPRINT("[RTP DEBUG] Frame subsamp=%s (%d), RTP type=%d, width=%d, height=%d\n",
+                          subsamp_name, frame_info->subsamp, frame_info->jpeg_type,
+                          frame_info->width, frame_info->height);
+               }
+
+    /* CRITICAL: Extract and cache quantization tables from source JPEG BEFORE extracting scan data.
+     * Store tables in frame structure to avoid race condition with global cache.
+     * Tables will be included in RTP payload if Q=255 is set.
+     * NO sanitization - preserve original values as-is in NATURAL order (as in DQT)
      */
-    switch (frame_info->subsamp) {
-        case TJSAMP_420: frame_info->jpeg_type = 1; break; /* 4:2:0 -> Type 1 */
-        case TJSAMP_422: frame_info->jpeg_type = 0; break; /* 4:2:2 -> Type 0 */
-        case TJSAMP_444: frame_info->jpeg_type = 3; break; /* 4:4:4 -> Type 3 */
-        default:
-            frame_info->jpeg_type = 0; /* fallback: 4:2:2 */
-            break;
+    rtpjpeg_cache_qtables_from_jpeg(jpeg_data, eoi_pos);
+    const uint8_t *qt_luma_ptr = NULL, *qt_chroma_ptr = NULL;
+    int have_luma = 0, have_chroma = 0, qt_precision = 0;
+    if (rtpjpeg_get_cached_qtables(&qt_luma_ptr, &qt_chroma_ptr, &have_luma, &have_chroma, &qt_precision) == 0) {
+        /* Copy tables to frame structure - preserve NATURAL order as in DQT */
+        frame_info->have_luma = have_luma;
+        frame_info->have_chroma = have_chroma;
+        frame_info->qt_precision = qt_precision;
+        if (have_luma && qt_luma_ptr) {
+            memcpy(frame_info->qt_luma, qt_luma_ptr, 64);
+            /* NO sanitization - preserve original values as-is */
+        }
+        if (have_chroma && qt_chroma_ptr) {
+            memcpy(frame_info->qt_chroma, qt_chroma_ptr, 64);
+            /* NO sanitization - preserve original values as-is */
+        }
+        static int cache_log_count = 0;
+        if (cache_log_count++ < 5) {
+            OPRINT("[RTP DEBUG] Quantization tables cached: have_luma=%d, have_chroma=%d, precision=%d\n",
+                   have_luma, have_chroma, qt_precision);
+        }
+    } else {
+        frame_info->have_luma = 0;
+        frame_info->have_chroma = 0;
+        frame_info->qt_precision = 0;
+        static int cache_log_count = 0;
+        if (cache_log_count++ < 5) {
+            OPRINT("[RTP DEBUG] No quantization tables found in JPEG\n");
+        }
     }
 
     return 0;
@@ -176,7 +374,43 @@ Return Value: 0 on success, -1 on error
 static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg_frame_t *frame,
                            uint32_t frame_timestamp)
 {
-    if (!client || !frame || !frame->baseline_jpeg || frame->baseline_size <= 0) {
+    /* Initialize QT insertion settings */
+    const int qt_insertion_enabled = 1; /* ENABLED: RFC 2435 QT header insertion */
+    const int have_both = frame->have_luma && frame->have_chroma;
+    const int q255_ok = (frame->qt_precision == 0) && have_both;
+    int q_value_fixed = q255_ok ? 255 : 75;
+    
+    /* Log QT disabled fallback */
+    static int qt_fallback_log_count = 0;
+    if (!q255_ok && qt_fallback_log_count++ < 5) {
+        OPRINT("[RTP WARNING] QT disabled, fallback Q=75 (no DQT): precision=%d, have_luma=%d, have_chroma=%d\n",
+               frame->qt_precision, frame->have_luma, frame->have_chroma);
+    }
+    
+    /* DEBUG: Log actual subsamp and selected type before sending */
+    static int send_subsamp_log_count = 0;
+    if (send_subsamp_log_count++ < 5) {
+        const char *subsamp_name = "UNKNOWN";
+        switch (frame->subsamp) {
+            case TJSAMP_420: subsamp_name = "4:2:0"; break;
+            case TJSAMP_422: subsamp_name = "4:2:2"; break;
+            case TJSAMP_444: subsamp_name = "4:4:4"; break;
+            case TJSAMP_440: subsamp_name = "4:4:0"; break;
+            case TJSAMP_411: subsamp_name = "4:1:1"; break;
+            case TJSAMP_GRAY: subsamp_name = "GRAY"; break;
+            default: break;
+        }
+        OPRINT("[RTP DEBUG] send_rtp_packet: subsamp=%s (%d), type=%d, Q=%d, is_rtp_format=%d\n",
+               subsamp_name, frame->subsamp, frame->jpeg_type, q_value_fixed, frame->is_rtp_format);
+    }
+    
+    static int send_count = 0;
+    if (send_count++ < 5) {
+        OPRINT("[RTP DEBUG] send_rtp_packet called: frame_size=%zu, subsamp=%d, type=%d, is_rtp_format=%d\n",
+               frame->rtp_payload_size, frame->subsamp, frame->jpeg_type, frame->is_rtp_format);
+    }
+
+    if (!client || !frame || !frame->rtp_payload || frame->rtp_payload_size <= 0) {
         OPRINT("[RTP ERROR] invalid frame data for transmission\n");
         return -1;
     }
@@ -186,31 +420,36 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
         return -1;
     }
 
-    int frame_width_div8 = frame->width / 8;
-    int frame_height_div8 = frame->height / 8;
-    if (frame_width_div8 <= 0 || frame_height_div8 <= 0) {
-        OPRINT("[RTP ERROR] frame dimensions not divisible by 8 (%d x %d)\n", frame->width, frame->height);
-        return -1;
-    }
-
-    /* Send full baseline JPEG including SOI - Q=75 (tables in JPEG payload) */
-    const unsigned char *jpeg_data = frame->baseline_jpeg;
-    size_t jpeg_size = (size_t)frame->baseline_size;
+    /* Fragment and send scan-only payload per RFC 2435 (no SOI/EOI in payload) */
+    const unsigned char *jpeg_data = frame->rtp_payload;   /* points to scan data */
+    size_t jpeg_size = frame->rtp_payload_size;            /* scan length */
     size_t fragment_offset = 0;
     size_t remaining = jpeg_size;
     uint16_t seq = client->sequence_number;
     int is_tcp = (client->rtp_port == 0);
     size_t max_packet_size = is_tcp ? MAX_TCP_PACKET_SIZE : MAX_RTP_PACKET_SIZE;
-    const int q_value_fixed = 75; /* Q=0..99 when tables are in JPEG payload */
+    /* Q=255 if quantization tables are cached and 8-bit AND will be inserted, else 75 */
+    /* Use tables from frame structure (not global cache) to avoid race condition */
+    const uint8_t *qt_luma = frame->have_luma ? frame->qt_luma : NULL;
+    const uint8_t *qt_chroma = frame->have_chroma ? frame->qt_chroma : NULL;
+    int have_luma = frame->have_luma;
+    int have_chroma = frame->have_chroma;
+    int qt_precision = frame->qt_precision;
+    /* qt_insertion_enabled and q_value_fixed already initialized at function start */
 
+    /* Calculate width/8 and height/8 with safe rounding up (ceil) */
+    int frame_width_div8 = (frame->width + 7) / 8;
+    int frame_height_div8 = (frame->height + 7) / 8;
+    if (frame_width_div8 <= 0 || frame_height_div8 <= 0 || frame_width_div8 > 255 || frame_height_div8 > 255) {
+        OPRINT("[RTP ERROR] frame dimensions not divisible by 8 or too large (%d x %d, div8: %d x %d)\n", 
+               frame->width, frame->height, frame_width_div8, frame_height_div8);
+        return -1;
+    }
 
-    /* CRITICAL: Ensure type=1 (4:2:2) is consistent for all fragments */
     const unsigned char jpeg_type_fixed = (unsigned char)frame->jpeg_type;
 
     while (remaining > 0) {
-        int first_fragment = (fragment_offset == 0);
-        size_t total_header_size = 20; /* 12-byte RTP + 8-byte JPEG header */
-
+        size_t total_header_size = 20; /* 12 RTP + 8 JPEG header */
         if (total_header_size >= max_packet_size) {
             OPRINT("[RTP ERROR] header size %zu exceeds packet size limit %zu\n", total_header_size, max_packet_size);
             return -1;
@@ -222,20 +461,35 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
             return -1;
         }
 
-        size_t payload_size = (remaining < max_payload) ? remaining : max_payload;
-        int is_last_packet = (payload_size == remaining);
-        
-        /* CRITICAL: Verify fragment offset is correct - must match position in JPEG */
-        if (fragment_offset + payload_size > jpeg_size) {
-            OPRINT("[RTP ERROR] Fragment offset %zu + payload %zu exceeds JPEG size %zu!\n",
-                   fragment_offset, payload_size, jpeg_size);
+        /* Calculate QT header length if needed (for first fragment with Q=255) */
+        /* CRITICAL: Must be calculated BEFORE payload_size calculation */
+        /* We calculate it here, but actual building happens later after packet creation */
+        size_t qt_hdr_len = 0;
+        if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
+            /* Calculate QT header size: MBZ(1) + Pq(1) + Lq(2) + [Tq(1) + 64 bytes]*2 */
+            qt_hdr_len = 4 + 65 + 65; /* MBZ,Pq,Lq + (Tq+64)*2 */
+        }
+
+        /* Calculate payload size: reduce by qt_hdr_len if QT header will be inserted */
+        /* CRITICAL: payload_size must be reduced by qt_hdr_len in first fragment to make room for QT header */
+        /* CRITICAL: Ensure max_scan_payload is not negative */
+        size_t max_scan_payload = (qt_hdr_len < max_payload) ? (max_payload - qt_hdr_len) : 0;
+        if (max_scan_payload == 0 && qt_hdr_len > 0) {
+            OPRINT("[RTP ERROR] QT header too large: qt_hdr_len=%zu, max_payload=%zu\n", qt_hdr_len, max_payload);
             return -1;
         }
+        size_t payload_size = (remaining < max_scan_payload) ? remaining : max_scan_payload;
+        if (payload_size == 0) {
+            OPRINT("[RTP ERROR] payload_size is 0: remaining=%zu, max_scan_payload=%zu, qt_hdr_len=%zu, max_payload=%zu\n", 
+                   remaining, max_scan_payload, qt_hdr_len, max_payload);
+            return -1;
+        }
+        int is_last_packet = (payload_size == remaining);
 
         unsigned char packet[MAX_TCP_PACKET_SIZE];
 
-        packet[0] = 0x80;
-        packet[1] = (is_last_packet ? 0x80 : 0x00) | RTP_PAYLOAD_TYPE;
+        packet[0] = 0x80; /* V=2, P=0, X=0, CC=0 */
+        packet[1] = (is_last_packet ? 0x80 : 0x00) | RTP_PAYLOAD_TYPE; /* M=1 only for last */
         packet[2] = (seq >> 8) & 0xFF;
         packet[3] = seq & 0xFF;
         packet[4] = (frame_timestamp >> 24) & 0xFF;
@@ -246,77 +500,255 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
         packet[9] = (RTP_SSRC >> 16) & 0xFF;
         packet[10] = (RTP_SSRC >> 8) & 0xFF;
         packet[11] = RTP_SSRC & 0xFF;
-
-        packet[12] = 0;
-        packet[13] = (fragment_offset >> 16) & 0xFF;
-        packet[14] = (fragment_offset >> 8) & 0xFF;
-        packet[15] = fragment_offset & 0xFF;
-        packet[16] = jpeg_type_fixed; /* CRITICAL: Use fixed type for all fragments */
-        packet[17] = (unsigned char)q_value_fixed;
-        packet[18] = (unsigned char)frame_width_div8;
-        packet[19] = (unsigned char)frame_height_div8;
-
+        
+        /* 8‑byte JPEG header */
+        /* CRITICAL: fragment_offset in JPEG header (bytes 13-15) counts ONLY scan data, NOT QT header */
+        /* This is correct - fragment_offset is already set to scan data offset */
+        packet[12] = 0;                                      /* Type‑specific */
+        packet[13] = (fragment_offset >> 16) & 0xFF;         /* off[23:16] */
+        packet[14] = (fragment_offset >> 8) & 0xFF;          /* off[15:8]  */
+        packet[15] = fragment_offset & 0xFF;                 /* off[7:0]   */
+        packet[16] = jpeg_type_fixed;                        /* Type */
+        packet[17] = (unsigned char)q_value_fixed;           /* Q (75 when QT disabled, 255 when QT enabled) */
+        packet[18] = (unsigned char)frame_width_div8;        /* Width/8 */
+        packet[19] = (unsigned char)frame_height_div8;       /* Height/8 */
+        
         size_t payload_offset = 20;
-        simd_memcpy(packet + payload_offset, jpeg_data + fragment_offset, payload_size);
-        size_t packet_size = payload_offset + payload_size;
-
-
-        int sent = 0;
-        if (is_tcp) {
-            static int tcp_nodelay_sockets[MAX_CLIENTS] = {0};
-            int client_idx = -1;
-            pthread_mutex_lock(&clients_mutex);
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (clients[i].socket == client->socket) {
-                    client_idx = i;
+        
+        /* CRITICAL: QT header must fit in first packet */
+        /* Check: payload_offset (20) + qt_hdr_len <= max_packet_size - 12 (TCP wrapper) */
+        if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
+            if (payload_offset + qt_hdr_len > max_packet_size - 12) {
+                OPRINT("[RTP WARNING] QT header too large for packet: qt_hdr_len=%zu, max_packet_size=%zu, falling back to Q=75\n",
+                       qt_hdr_len, max_packet_size);
+                q_value_fixed = 75;
+                qt_hdr_len = 0;
+                /* Update Q value in packet header */
+                packet[17] = (unsigned char)q_value_fixed;
+            }
+        }
+        
+        /* Build and insert QT header if needed (for first fragment with Q=255) */
+        if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
+            /* Quantization Table Header (RFC 2435 Section 3.1.8)
+             * Convert from NATURAL order (DQT) to ZIGZAG order (as FFmpeg expects)
+             * Validate for zeros AFTER zigzag conversion
+             */
+            
+            /* Convert tables from natural order (DQT) to zigzag order (RFC 2435) */
+            uint8_t lz[64], cz[64];
+            for (int i = 0; i < 64; i++) {
+                lz[i] = frame->qt_luma[rfc2435_zigzag[i]];
+            }
+            for (int i = 0; i < 64; i++) {
+                cz[i] = frame->qt_chroma[rfc2435_zigzag[i]];
+            }
+            
+            /* Validate: FFmpeg crashes on zeros/garbage */
+            int found_zero = 0;
+            for (int i = 0; i < 64; i++) {
+                if (!lz[i] || !cz[i]) {
+                    found_zero = 1;
+                    static int zero_log_count = 0;
+                    if (zero_log_count++ < 3) {
+                        OPRINT("[RTP WARNING] Found zero in zigzag-ordered QT table (lz[%d]=%d, cz[%d]=%d), falling back to Q=75\n",
+                               i, lz[i], i, cz[i]);
+                    }
                     break;
                 }
             }
-            pthread_mutex_unlock(&clients_mutex);
-
-            if (client_idx >= 0 && !tcp_nodelay_sockets[client_idx]) {
-                int opt = 1;
-                if (setsockopt(client->socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == 0) {
-                    tcp_nodelay_sockets[client_idx] = 1;
+            
+            /* Fallback to Q=75 if zero found */
+            if (found_zero) {
+                q_value_fixed = 75;
+                qt_hdr_len = 0;
+                /* Update Q value in packet header */
+                packet[17] = (unsigned char)q_value_fixed;
+                static int qt_fallback_log_count = 0;
+                if (qt_fallback_log_count++ < 3) {
+                    OPRINT("[RTP WARNING] QT disabled, fallback Q=75 (no DQT) - zero found in zigzag tables\n");
+                }
+            } else {
+                /* Build QT header: MBZ(1) + Pq(1) + Lq(2) + [Tq(1) + 64 bytes] per table */
+                size_t qt_hdr_len_calc = 4 + 65 + 65; /* MBZ,Pq,Lq + (Tq+64)*2 */
+                
+                /* Check that QT header fits in first packet */
+                if (20 + qt_hdr_len_calc >= max_packet_size) {
+                    q_value_fixed = 75;
+                    qt_hdr_len = 0;
+                    /* Update Q value in packet header */
+                    packet[17] = (unsigned char)q_value_fixed;
+                    static int qt_fallback_log_count = 0;
+                    if (qt_fallback_log_count++ < 3) {
+                        OPRINT("[RTP WARNING] QT disabled, fallback Q=75 (no DQT) - QT header too large\n");
+                    }
+                } else {
+                    uint8_t qt_hdr[4 + 130];
+                    size_t off = 0;
+                    
+                    qt_hdr[off++] = 0x00;                 /* MBZ */
+                    qt_hdr[off++] = 0x00;                 /* Pq=0 (8-bit) */
+                    uint16_t Lq = 130;                    /* (Tq+64)*2 */
+                    qt_hdr[off++] = (Lq >> 8) & 0xFF;
+                    qt_hdr[off++] = Lq & 0xFF;
+                    qt_hdr[off++] = 0x00;                 /* Tq=0 (luma) */
+                    memcpy(qt_hdr + off, lz, 64);
+                    off += 64;
+                    qt_hdr[off++] = 0x01;                 /* Tq=1 (chroma) */
+                    memcpy(qt_hdr + off, cz, 64);
+                    off += 64;
+                    
+                    /* Verify QT header length */
+                    if (off != qt_hdr_len_calc) {
+                        OPRINT("[RTP ERROR] QT header length mismatch: calculated=%zu, actual=%zu\n", qt_hdr_len_calc, off);
+                        return -1;
+                    }
+                    
+                    /* Update qt_hdr_len for payload_size calculation */
+                    qt_hdr_len = qt_hdr_len_calc;
+                    
+                    /* DEBUG: Log QT header info (once per frame) */
+                    static int qt_pre_insert_log_count = 0;
+                    if (qt_pre_insert_log_count++ < 1) {
+                        OPRINT("[RTP QT PRE-INSERT] Lq=%04x (BE), lz[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x, cz[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                               Lq, lz[0], lz[1], lz[2], lz[3], lz[4], lz[5], lz[6], lz[7],
+                               cz[0], cz[1], cz[2], cz[3], cz[4], cz[5], cz[6], cz[7]);
+                    }
+                    
+                    /* Insert QT header into packet */
+                    memcpy(packet + payload_offset, qt_hdr, qt_hdr_len);
                 }
             }
+        }
+        
+        /* Copy scan data to packet */
+        if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255 && qt_hdr_len > 0) {
+            /* QT header already inserted, copy scan data after it */
+            simd_memcpy(packet + payload_offset + qt_hdr_len, jpeg_data + fragment_offset, payload_size);
+        } else {
+            /* No QT header - just copy scan data */
+            simd_memcpy(packet + payload_offset, jpeg_data + fragment_offset, payload_size);
+        }
+        
+        /* Calculate packet size: RTP+JPEG headers (20) + QT header (if any) + scan data */
+        size_t packet_size = payload_offset + qt_hdr_len + payload_size;
+        
+        /* CRITICAL: Dump raw RTP packet BEFORE TCP wrapping for analysis */
+        static int raw_packet_dump_count = 0;
+        if (raw_packet_dump_count++ < 3 && fragment_offset == 0) {
+            OPRINT("[RTP DEBUG] raw_packet_dump_count=%d, fragment_offset=%zu, q_value_fixed=%d, packet_size=%zu\n", 
+                   raw_packet_dump_count, fragment_offset, q_value_fixed, packet_size);
+            const char *dump_bin = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/raw_rtp_packet.bin";
+            const char *dump_hex = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/raw_rtp_packet.hex";
+            FILE *dump_file = fopen(dump_bin, "wb");
+            if (dump_file) {
+                fwrite(packet, 1, packet_size, dump_file);
+                fclose(dump_file);
+                OPRINT("[RTP RAW DUMP] Dumped %zu bytes to %s\n", packet_size, dump_bin);
+                
+                FILE *hex_file = fopen(dump_hex, "w");
+                if (hex_file) {
+                    fprintf(hex_file, "Raw RTP packet (%zu bytes):\n", packet_size);
+                    fprintf(hex_file, "RTP Header (12 bytes):\n");
+                    for (int i = 0; i < 12 && i < packet_size; i++) {
+                        fprintf(hex_file, "%02x ", packet[i]);
+                    }
+                    fprintf(hex_file, "\n\nJPEG Header (8 bytes, offset 12):\n");
+                    for (int i = 12; i < 20 && i < packet_size; i++) {
+                        fprintf(hex_file, "%02x ", packet[i]);
+                    }
+                    fprintf(hex_file, "\n\nPayload (offset 20, first 200 bytes):\n");
+                    for (int i = 20; i < packet_size && i < 220; i++) {
+                        fprintf(hex_file, "%02x ", packet[i]);
+                        if ((i+1) % 16 == 0) fprintf(hex_file, "\n");
+                    }
+                    fprintf(hex_file, "\n");
+                    fclose(hex_file);
+                    OPRINT("[RTP RAW DUMP] Dumped hex to %s\n", dump_hex);
+                }
+            } else {
+                OPRINT("[RTP RAW DUMP] Failed to open %s: %s\n", dump_bin, strerror(errno));
+            }
+        }
+        
+        /* CRITICAL: Verify packet size is valid */
+        if (packet_size > MAX_TCP_PACKET_SIZE) {
+            OPRINT("[RTP ERROR] Packet size exceeds MAX_TCP_PACKET_SIZE: packet_size=%zu, MAX=%d\n", 
+                   packet_size, MAX_TCP_PACKET_SIZE);
+            return -1;
+        }
+        if (packet_size < 20) {
+            OPRINT("[RTP ERROR] Packet size too small: packet_size=%zu (minimum 20 bytes)\n", packet_size);
+            return -1;
+        }
 
+        if (fragment_offset == 0 && payload_size >= 2 && jpeg_data[0] == 0xFF) {
+            unsigned char b2 = jpeg_data[1];
+            if (b2 == 0xD8 || b2 == 0xE0 || b2 == 0xE1 || b2 == 0xDB || b2 == 0xC0 || b2 == 0xC4 || b2 == 0xDA) {
+                OPRINT("[RTP ERROR] Scan payload begins with JPEG marker 0xFF 0x%02X\n", b2);
+                return -1;
+            }
+        }
+        if (is_last_packet && payload_size >= 2) {
+            if (jpeg_data[fragment_offset + payload_size - 2] == 0xFF &&
+                jpeg_data[fragment_offset + payload_size - 1] == 0xD9) {
+                OPRINT("[RTP ERROR] Last packet payload ends with FF D9! This should not happen - EOI was excluded in prepare_rtp_jpeg_frame\n");
+                return -1;
+            }
+        }
+
+        int sent = 0;
+        if (is_tcp) {
+            static int tcp_nodelay_sockets_[MAX_CLIENTS] = {0};
+            int client_idx = -1;
+            pthread_mutex_lock(&clients_mutex);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].socket == client->socket) { client_idx = i; break; }
+            }
+            pthread_mutex_unlock(&clients_mutex);
+            if (client_idx >= 0 && !tcp_nodelay_sockets_[client_idx]) {
+                int opt = 1; setsockopt(client->socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+                tcp_nodelay_sockets_[client_idx] = 1;
+            }
             unsigned char tcp_packet[4 + MAX_TCP_PACKET_SIZE];
-            tcp_packet[0] = '$';
-            tcp_packet[1] = 0;
-            tcp_packet[2] = (packet_size >> 8) & 0xFF;
-            tcp_packet[3] = packet_size & 0xFF;
+            tcp_packet[0] = '$'; tcp_packet[1] = 0; /* channel 0 */
+            tcp_packet[2] = (packet_size >> 8) & 0xFF; tcp_packet[3] = packet_size & 0xFF;
             simd_memcpy(tcp_packet + 4, packet, packet_size);
-            size_t to_send = 4 + packet_size;
-            const unsigned char *ptr = tcp_packet;
+            size_t to_send = 4 + packet_size; const unsigned char *ptr = tcp_packet;
+            
+            /* DEBUG: Log packet sending with QT header */
+            static int packet_send_log_count = 0;
+            if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255 && packet_send_log_count++ < 3) {
+                OPRINT("[RTP DEBUG] Sending packet with QT header: packet_size=%zu, tcp_packet_size=%zu, fragment_offset=%zu\n",
+                       packet_size, to_send, fragment_offset);
+            }
+            
             while (to_send > 0) {
-                sent = send(client->socket, ptr, to_send, MSG_NOSIGNAL);
+                sent = send(client->socket, ptr, to_send, MSG_NOSIGNAL | MSG_DONTWAIT);
                 if (sent <= 0) {
                     if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        OPRINT("Error sending RTP over TCP: %s\n", strerror(errno));
-                        return -1;
+                        /* Check for connection errors - socket may be closed */
+                        if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
+                            OPRINT("Error sending RTP over TCP: %s (socket closed, packet_size=%zu)\n", strerror(errno), packet_size);
+                            return -1;
+                        }
+                        OPRINT("Error sending RTP over TCP: %s (packet_size=%zu, sent=%d)\n", strerror(errno), packet_size, sent); 
+                        return -1; 
+                    }
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) { 
+                        /* Socket buffer full - wait a bit and retry */
+                        usleep(1000); /* 1ms */
+                        continue; 
                     }
                     continue;
                 }
-                to_send -= sent;
-                ptr += sent;
+                to_send -= sent; ptr += sent;
             }
         } else {
-            struct sockaddr_in rtp_addr;
-            memset(&rtp_addr, 0, sizeof(rtp_addr));
-            rtp_addr.sin_family = AF_INET;
-            rtp_addr.sin_addr = client->addr.sin_addr;
-            rtp_addr.sin_port = htons(client->rtp_port);
-            sent = sendto(rtp_socket, packet, packet_size, 0,
-                          (struct sockaddr *)&rtp_addr, sizeof(rtp_addr));
-            if (sent < 0) {
-                OPRINT("Error sending RTP over UDP: %s\n", strerror(errno));
-                return -1;
-            }
-            if (sent != (int)packet_size) {
-                OPRINT("Partial UDP send: %d of %zu\n", sent, packet_size);
-                return -1;
-            }
+            struct sockaddr_in rtp_addr; memset(&rtp_addr, 0, sizeof(rtp_addr));
+            rtp_addr.sin_family = AF_INET; rtp_addr.sin_addr = client->addr.sin_addr; rtp_addr.sin_port = htons(client->rtp_port);
+            sent = sendto(rtp_socket, packet, packet_size, 0, (struct sockaddr *)&rtp_addr, sizeof(rtp_addr));
+            if (sent < 0 || sent != (int)packet_size) { OPRINT("Error/partial UDP send: %s\n", strerror(errno)); return -1; }
         }
 
         seq++;
@@ -356,6 +788,8 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
         OPRINT(" o: Malformed RTSP request\n");
         return;
     }
+    
+    OPRINT(" o: RTSP request: %s %s %s\n", method, uri, version);
 
     // Parse headers
     while ((line = strtok_r(NULL, "\r\n", &saveptr))) {
@@ -417,7 +851,7 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                  "a=control:track1\r\n"
                  "a=rtpmap:26 JPEG/90000\r\n"
                  "a=fmtp:26 width=%d;height=%d\r\n"
-                 "a=framesize:26 %dx%d\r\n"
+                 "a=framesize:26 %d-%d\r\n"
                  "a=framerate:%d\r\n",
                  (int)time(NULL), (int)time(NULL), inet_ntoa(client_addr.sin_addr), width, height, width, height, fps);
         snprintf(response, sizeof(response),
@@ -441,9 +875,9 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
                 use_tcp = 1;
             } else {
                 /* Check if client explicitly requested UDP */
-                char *client_port = strstr(transport_line, "client_port=");
-                if (client_port) {
-                    sscanf(client_port, "client_port=%d-%d", &client_rtp_port, &client_rtcp_port);
+            char *client_port = strstr(transport_line, "client_port=");
+            if (client_port) {
+                sscanf(client_port, "client_port=%d-%d", &client_rtp_port, &client_rtcp_port);
                     if (client_rtp_port > 0 && client_rtcp_port > 0) {
                         use_tcp = 0;
                     }
@@ -525,6 +959,7 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
         for (i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].active && clients[i].socket == client_socket) {
                 clients[i].playing = 1;
+                OPRINT(" o: Client %d set to playing state (socket %d)\n", i, client_socket);
                 break;
             }
         }
@@ -794,7 +1229,12 @@ static void* handle_client_thread(void* arg) {
             clients[i].socket = 0;
             clients[i].rtp_port = 0;
             clients[i].rtcp_port = 0;
+            clients[i].active = 0;
+            clients[i].playing = 0;
+            clients[i].timestamp = 0;
+            clients[i].sequence_number = 0;
             memset(&clients[i].addr, 0, sizeof(clients[i].addr));
+            OPRINT(" o: Client %d cleaned up (socket %d)\n", i, client_socket);
             break;
         }
     }
@@ -901,7 +1341,7 @@ void *stream_worker_thread(void *arg)
         
         if (!is_new_frame) {
             /* No new frame yet - wait for fresh frame using helper */
-            pthread_mutex_unlock(&pglobal->in[input_number].db);
+        pthread_mutex_unlock(&pglobal->in[input_number].db);
             if (!wait_for_fresh_frame(&pglobal->in[input_number], &last_rtsp_sequence)) {
                 /* wait_for_fresh_frame returns 0 only on error; mutex is unlocked */
                 usleep(1000); /* Small delay to prevent busy waiting */
@@ -950,7 +1390,7 @@ void *stream_worker_thread(void *arg)
         
         /* Allow others to access the global buffer again - like HTTP plugin */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
-
+        
 
         pthread_mutex_lock(&clients_mutex);
         int playing_clients = 0;
@@ -1031,7 +1471,7 @@ void *stream_worker_thread(void *arg)
             /* For UDP: socket > 0, addr != 0, and rtp_port > 0 */
             int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
             int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-            if (clients[i].active && clients[i].playing && (is_tcp_client || is_udp_client) && prepared_frame.baseline_jpeg != NULL && prepared_frame.baseline_size > 0) {
+            if (clients[i].active && clients[i].playing && (is_tcp_client || is_udp_client) && prepared_frame.rtp_payload != NULL && prepared_frame.rtp_payload_size > 0) {
                 if (clients[i].timestamp == 0) {
                     if (base_timestamp > 0) {
                         clients[i].timestamp = base_timestamp;
@@ -1040,8 +1480,15 @@ void *stream_worker_thread(void *arg)
                     }
                 }
                 clients_count++;
-                if (send_rtp_packet(rtp_socket, &clients[i], &prepared_frame, clients[i].timestamp) < 0) {
-                    OPRINT("Failed to send to client %d\n", i);
+                int send_result = send_rtp_packet(rtp_socket, &clients[i], &prepared_frame, clients[i].timestamp);
+                if (send_result < 0) {
+                    OPRINT("[RTP ERROR] Failed to send RTP packet to client %d (socket %d, active=%d, playing=%d)\n", 
+                           i, clients[i].socket, clients[i].active, clients[i].playing);
+                    /* Mark client as inactive if send fails - socket may be closed */
+                    if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
+                        clients[i].active = 0;
+                        clients[i].playing = 0;
+                    }
                 }
             }
         }
@@ -1174,6 +1621,10 @@ int output_init(output_parameter *param, int id)
     
     OPRINT("RTSP server initialized on port %d\n", port);
     OPRINT("Input plugin: %d\n", input_number);
+
+    /* DEBUG: Log server socket status */
+    OPRINT("[RTSP DEBUG] Server socket created: fd=%d\n", server_socket);
+
     return 0;
 }
 

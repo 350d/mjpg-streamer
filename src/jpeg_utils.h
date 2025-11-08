@@ -32,10 +32,21 @@ extern const unsigned char jpeg_default_qt_chroma[64];
 int turbojpeg_header_info(const unsigned char *jpeg_data, int jpeg_size,
                           int *width, int *height, int *subsamp);
 
-/* Recompress JPEG to baseline with default Huffman tables (RFC 2435 compatible) */
-int recompress_jpeg_to_baseline_with_default_dht(const unsigned char *input_jpeg, int input_size,
-                                                 unsigned char **output_jpeg, unsigned long *output_size,
-                                                 int quality, int target_subsamp);
+/* Strip JPEG to RTP/JPEG format (RFC 2435) */
+/* Input: Full JPEG (SOI...EOI), dimensions, subsamp */
+/* Output: RTP/JPEG payload (JPEG header + optional QT + scan data, no SOI/EOI) */
+int jpeg_strip_to_rtp(const unsigned char *jfif, size_t jfif_sz,
+                     unsigned char *out, size_t *out_sz,
+                     uint16_t w, uint16_t h, int subsamp);
+
+/* RFC 2435 Quantization Table extraction/cache */
+/* Extract DQT (FF DB) segments from JPEG and cache tables for RTP transmission */
+void rtpjpeg_cache_qtables_from_jpeg(const uint8_t *p, size_t sz);
+int rtpjpeg_get_cached_qtables(const uint8_t **luma, const uint8_t **chroma,
+                               int *have_luma, int *have_chroma, int *precision);
+/* Convert quantization table from natural order (DQT) to zigzag order (RFC 2435) */
+void rtpjpeg_qt_to_zigzag(const uint8_t *src_nat, uint8_t *dst_zig);
+
 
 
 /* JPEG utility functions */

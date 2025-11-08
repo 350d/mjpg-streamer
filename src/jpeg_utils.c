@@ -98,304 +98,420 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
         unsigned char *yuv = vd->framebuffer;
         unsigned char *rgb = rgb_buffer;
         int i;
-        
-        for (i = 0; i < vd->width * vd->height / 2; i++) {
-            int y1, y2, u, v;
+        for (i = 0; i < vd->width * vd->height; i++) {
+            int y = yuv[i * 2];
+            int u = yuv[i * 2 + 1] - 128;
+            int v = yuv[(i * 2 + 2) % (vd->width * vd->height * 2)] - 128;
             
-            if (vd->formatIn == V4L2_PIX_FMT_YUYV) {
-                y1 = yuv[0]; u = yuv[1]; y2 = yuv[2]; v = yuv[3];
-            } else { /* UYVY */
-                u = yuv[0]; y1 = yuv[1]; v = yuv[2]; y2 = yuv[3];
-            }
+            int r = y + (int)(1.402 * v);
+            int g = y - (int)(0.344 * u) - (int)(0.714 * v);
+            int b = y + (int)(1.772 * u);
             
-            /* Convert YUV to RGB for first pixel */
-            int r1 = y1 + 1.402 * (v - 128);
-            int g1 = y1 - 0.344136 * (u - 128) - 0.714136 * (v - 128);
-            int b1 = y1 + 1.772 * (u - 128);
-            
-            /* Convert YUV to RGB for second pixel */
-            int r2 = y2 + 1.402 * (v - 128);
-            int g2 = y2 - 0.344136 * (u - 128) - 0.714136 * (v - 128);
-            int b2 = y2 + 1.772 * (u - 128);
-            
-            /* Clamp values */
-            rgb[0] = (r1 < 0) ? 0 : (r1 > 255) ? 255 : r1;
-            rgb[1] = (g1 < 0) ? 0 : (g1 > 255) ? 255 : g1;
-            rgb[2] = (b1 < 0) ? 0 : (b1 > 255) ? 255 : b1;
-            rgb[3] = (r2 < 0) ? 0 : (r2 > 255) ? 255 : r2;
-            rgb[4] = (g2 < 0) ? 0 : (g2 > 255) ? 255 : g2;
-            rgb[5] = (b2 < 0) ? 0 : (b2 > 255) ? 255 : b2;
-            
-            yuv += 4;
-            rgb += 6;
+            rgb[i * 3] = (r < 0) ? 0 : (r > 255) ? 255 : r;
+            rgb[i * 3 + 1] = (g < 0) ? 0 : (g > 255) ? 255 : g;
+            rgb[i * 3 + 2] = (b < 0) ? 0 : (b > 255) ? 255 : b;
         }
-    } else if (vd->formatIn == V4L2_PIX_FMT_RGB24) {
-        rgb_buffer = vd->framebuffer;
-    } else {
-        /* Unsupported format */
-        /* Don't destroy cached handle */
-        return -1;
-    }
-    
-    /* Compress to JPEG */
-    result = tjCompress2(handle, rgb_buffer, vd->width, 0, vd->height, 
-                        TJPF_RGB, &buffer, &jpeg_size, TJSAMP_422, quality, 0);
-    
-    if (result == 0) {
-        result = (int)jpeg_size;
-    } else {
-        printf("TurboJPEG: tjCompress2() failed\n");
-        result = -1;
-    }
-    
-    /* Cleanup */
-    if (vd->formatIn == V4L2_PIX_FMT_YUYV || vd->formatIn == V4L2_PIX_FMT_UYVY) {
+        
+        /* Compress RGB to JPEG */
+        unsigned char *jpeg_buffer = NULL;
+        unsigned long jpeg_size_long = 0;
+        if (compress_rgb_to_jpeg(rgb_buffer, vd->width, vd->height, quality,
+                                 &jpeg_buffer, &jpeg_size_long) == 0) {
+            if (jpeg_size_long <= (unsigned long)size) {
+                memcpy(buffer, jpeg_buffer, jpeg_size_long);
+                jpeg_size = (int)jpeg_size_long;
+                result = 0;
+            }
+            free(jpeg_buffer);
+        }
+        
         free(rgb_buffer);
+    } else if (vd->formatIn == V4L2_PIX_FMT_MJPEG || vd->formatIn == V4L2_PIX_FMT_JPEG) {
+        /* Already JPEG - just copy */
+        if (vd->framebuffer && vd->sizeIn > 0 && vd->sizeIn <= size) {
+            memcpy(buffer, vd->framebuffer, vd->sizeIn);
+            jpeg_size = vd->sizeIn;
+            result = 0;
+        }
     }
-    /* Don't destroy cached handle */
     
+    tjDestroy(handle);
     return result;
 }
-#endif /* __linux__ */
-
-
-/******************************************************************************
-Description.: Validate JPEG data integrity
-Input Value.: JPEG data, size
-Return Value: 0 if valid, -1 if invalid
-******************************************************************************/
+#endif
 
 /******************************************************************************
-Description.: Decode JPEG to grayscale using libjpeg with integrated scaling
-Input Value.: JPEG data, size, scale factor, output pointers for gray data, width, height
+Description.: Decompress JPEG to grayscale with scaling
+Input Value.: JPEG data, size, scale factor, output pointers
 Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_decode_to_gray_scaled(unsigned char *jpeg_data, int jpeg_size, int scale_factor,
                                unsigned char **gray_data, int *width, int *height, int known_width, int known_height)
 {
-    /* CRITICAL: Use ONLY TurboJPEG - no libjpeg fallback */
-    /* TurboJPEG implementation */
+    /* Validate arguments */
+    if (!jpeg_data || jpeg_size <= 0 || !gray_data || !width || !height) {
+        return -1;
+    }
+    
+    /* Use TurboJPEG 2.x API */
     tjhandle handle = NULL;
     unsigned char *output_data = NULL;
     int result = -1;
     
-    /* Check for valid JPEG data */
-    if(jpeg_size < 4) {
-        return -1;
-    }
-    
-    /* Check for JPEG magic bytes */
-    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
-        return -1;
-    }
-    
+    /* Get cached decompress handle */
     handle = get_cached_decompress_handle();
     if (!handle) {
         return -1;
     }
     
-    /* Use provided dimensions - no need to parse JPEG header again */
-    /* Dimensions are already known from global metadata */
-    *width = known_width / scale_factor;
-    *height = known_height / scale_factor;
-    
-    /* Allocate output buffer */
-    output_data = malloc(*width * *height);
-    if (!output_data) {
-        /* Don't destroy cached handle */
+    /* Get dimensions and subsampling from JPEG header */
+    int jpeg_width = 0, jpeg_height = 0, subsamp = 0;
+    if (tjDecompressHeader2(handle, jpeg_data, jpeg_size, &jpeg_width, &jpeg_height, &subsamp) != 0) {
         return -1;
     }
     
-    /* Decompress to grayscale with scaling and optimization flags */
-    int flags = TJFLAG_FASTUPSAMPLE | TJFLAG_FASTDCT;
-    result = tjDecompress2(handle, jpeg_data, jpeg_size, output_data, *width, 0, *height, TJPF_GRAY, flags);
+    /* Use provided dimensions if available, otherwise use JPEG dimensions */
+    int target_width = (known_width > 0) ? known_width : jpeg_width;
+    int target_height = (known_height > 0) ? known_height : jpeg_height;
+    
+    /* Apply scale factor */
+    if (scale_factor > 0) {
+        target_width /= scale_factor;
+        target_height /= scale_factor;
+    }
+    
+    /* Allocate output buffer */
+    output_data = malloc(target_width * target_height);
+    if (!output_data) {
+        return -1;
+    }
+    
+    /* Decompress to grayscale */
+    result = tjDecompress2(handle, jpeg_data, jpeg_size, output_data, target_width, 0, target_height, TJPF_GRAY, 0);
     
     if (result == 0) {
         *gray_data = output_data;
+        *width = target_width;
+        *height = target_height;
     } else {
         free(output_data);
     }
     
-    /* Don't destroy cached handle */
     return (result == 0) ? 0 : -1;
 }
 
 /******************************************************************************
-Description.: Decode JPEG to Y-component only (fastest for motion detection)
-Input Value.: JPEG data, size, scale factor, output pointers for Y data, width, height
+Description.: Decompress JPEG to Y component (grayscale)
+Input Value.: JPEG data, size, scale factor, output pointers
 Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_decode_to_y_component(unsigned char *jpeg_data, int jpeg_size, int scale_factor,
-                                unsigned char **y_data, int *width, int *height, int known_width, int known_height)
+                               unsigned char **y_data, int *width, int *height, int known_width, int known_height)
 {
-    /* CRITICAL: Use ONLY TurboJPEG - no libjpeg fallback */
+    /* Validate arguments */
+    if (!jpeg_data || jpeg_size <= 0 || !y_data || !width || !height) {
+        return -1;
+    }
+    
+    /* Use TurboJPEG 2.x API */
     tjhandle handle = NULL;
-    unsigned char *yuv_data = NULL;
+    unsigned char *output_data = NULL;
     int result = -1;
     
-    
-    /* Check for valid JPEG data */
-    if(jpeg_size < 4) {
-        return -1;
-    }
-    
-    /* Check for JPEG magic bytes */
-    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
-        return -1;
-    }
-    
+    /* Get cached decompress handle */
     handle = get_cached_decompress_handle();
     if (!handle) {
         return -1;
     }
     
-    /* Use provided dimensions - no need to parse JPEG header again */
-    /* Dimensions are already known from global metadata */
-    *width = known_width / scale_factor;
-    *height = known_height / scale_factor;
-    
-    /* Use TurboJPEG built-in scaling for maximum performance */
-    *y_data = malloc(*width * *height);
-    if (!*y_data) {
+    /* Get dimensions and subsampling from JPEG header */
+    int jpeg_width = 0, jpeg_height = 0, subsamp = 0;
+    if (tjDecompressHeader2(handle, jpeg_data, jpeg_size, &jpeg_width, &jpeg_height, &subsamp) != 0) {
         return -1;
     }
     
-    /* Decompress directly to target size with optimization flags */
-    int flags = TJFLAG_FASTUPSAMPLE | TJFLAG_FASTDCT;
-    result = tjDecompress2(handle, jpeg_data, jpeg_size, *y_data, *width, 0, *height, TJPF_GRAY, flags);
-    if (result != 0) {
-        free(*y_data);
-        *y_data = NULL;
+    /* Use provided dimensions if available, otherwise use JPEG dimensions */
+    int target_width = (known_width > 0) ? known_width : jpeg_width;
+    int target_height = (known_height > 0) ? known_height : jpeg_height;
+    
+    /* Apply scale factor */
+    if (scale_factor > 0) {
+        target_width /= scale_factor;
+        target_height /= scale_factor;
+    }
+    
+    /* Allocate output buffer */
+    output_data = malloc(target_width * target_height);
+    if (!output_data) {
         return -1;
     }
+    
+    /* Decompress to grayscale (Y component) */
+    result = tjDecompress2(handle, jpeg_data, jpeg_size, output_data, target_width, 0, target_height, TJPF_GRAY, 0);
+    
+    if (result == 0) {
+        *y_data = output_data;
+        *width = target_width;
+        *height = target_height;
+    } else {
+        free(output_data);
+    }
+    
     return (result == 0) ? 0 : -1;
 }
 
 /******************************************************************************
-Description.: Detect data type and decode accordingly (universal decoder)
-Input Value.: Data buffer, size, scale factor, output pointers
+Description.: Decode any format to Y component
+Input Value.: data, size, scale factor, output pointers, known dimensions and format
 Return Value: 0 if ok, -1 on error
 ******************************************************************************/
-/* Optimized version that accepts known dimensions - NO JPEG header parsing */
 int decode_any_to_y_component(unsigned char *data, int data_size, int scale_factor,
                               unsigned char **y_data, int *width, int *height, int known_width, int known_height, int known_format)
 {
-    /* Use known dimensions directly - no need to parse JPEG header */
-    int scaled_width = known_width / scale_factor;
-    int scaled_height = known_height / scale_factor;
+    /* Validate arguments */
+    if (!data || data_size <= 0 || !y_data || !width || !height) {
+        return -1;
+    }
     
-    /* Use global format metadata for reliable detection */
-    if (known_format == V4L2_PIX_FMT_MJPEG || known_format == V4L2_PIX_FMT_JPEG) {
-        /* This is JPEG/MJPEG data - use optimized Y-component extraction */
+    /* Check if data is JPEG */
+    if (data_size >= 2 && data[0] == 0xFF && data[1] == 0xD8) {
+        /* JPEG data - use JPEG decoder */
         return jpeg_decode_to_y_component(data, data_size, scale_factor, y_data, width, height, known_width, known_height);
     }
     
-    /* Check for YUV formats using global metadata */
-    if (known_format == V4L2_PIX_FMT_YUYV || known_format == V4L2_PIX_FMT_UYVY) {
-        /* YUV422 data - extract Y component directly */
-        /* Use global metadata dimensions instead of stupid sqrt assumption */
-        *width = scaled_width;
-        *height = scaled_height;
-        
-        if (*width > 0 && *height > 0) {
-            *y_data = malloc(*width * *height);
-            if (*y_data) {
-                /* Y-component is at the beginning of YUV buffer - extract and scale */
-                if (scale_factor == 1) {
-                    /* No scaling needed - direct copy */
-                    int y_size = *width * *height;
-                    int copy_size = (y_size < data_size) ? y_size : data_size;
-                    simd_memcpy(*y_data, data, copy_size);
-                } else {
-                    /* Scale Y-component from full resolution to target resolution */
-                    for (int y = 0; y < *height; y++) {
-                        for (int x = 0; x < *width; x++) {
-                            int src_x = x * scale_factor;
-                            int src_y = y * scale_factor;
-                            int src_index = src_y * known_width + src_x;
-                            int dst_index = y * *width + x;
-                            (*y_data)[dst_index] = data[src_index];
-                        }
-                    }
-                }
-                return 0;
-            }
-        }
-    }
-    
-    /* Check for RGB formats using global metadata */
-    if (known_format == V4L2_PIX_FMT_RGB24 || known_format == V4L2_PIX_FMT_BGR24) {
-        /* RGB data - convert to Y component */
-        /* Use global metadata dimensions instead of stupid sqrt assumption */
-        
-        *width = scaled_width;
-        *height = scaled_height;
-        
-        if (*width > 0 && *height > 0) {
-            *y_data = malloc(*width * *height);
-            if (*y_data) {
-                /* Convert RGB to Y using luminance formula with scaling */
-                if (scale_factor == 1) {
-                    /* No scaling needed - direct conversion */
-                    for (int i = 0; i < *width * *height; i++) {
-                        int r = data[i * 3];
-                        int g = data[i * 3 + 1];
-                        int b = data[i * 3 + 2];
-                        
-                        /* Standard luminance formula: Y = 0.299*R + 0.587*G + 0.114*B */
-                        (*y_data)[i] = (unsigned char)(0.299 * r + 0.587 * g + 0.114 * b);
-                    }
-                } else {
-                    /* Scale RGB to target resolution and convert to Y */
-                    for (int y = 0; y < *height; y++) {
-                        for (int x = 0; x < *width; x++) {
-                            int src_x = x * scale_factor;
-                            int src_y = y * scale_factor;
-                            int src_index = (src_y * known_width + src_x) * 3;
-                            int dst_index = y * *width + x;
-                            
-                            int r = data[src_index];
-                            int g = data[src_index + 1];
-                            int b = data[src_index + 2];
-                            
-                            /* Standard luminance formula: Y = 0.299*R + 0.587*G + 0.114*B */
-                            (*y_data)[dst_index] = (unsigned char)(0.299 * r + 0.587 * g + 0.114 * b);
-                        }
-                    }
-                }
-                return 0;
-            }
-        }
-    }
-    
-    /* Unknown data type */
+    /* For other formats, return error */
     return -1;
 }
 
+/* Global cache for quantization tables (per-frame tables stored in rtp_jpeg_frame_t) */
+static uint8_t g_qt_luma[64];
+static uint8_t g_qt_chroma[64];
+static int     g_have_luma = 0;
+static int     g_have_chroma = 0;
+static int     g_qt_precision = 0; /* 0 = 8-bit, 1 = 16-bit */
+
+/* RFC 2435 requires zigzag order for QT elements */
+/* Must be declared before rtpjpeg_qt_to_zigzag function */
+const uint8_t rfc2435_zigzag[64] = {
+     0,  1,  5,  6, 14, 15, 27, 28,
+     2,  4,  7, 13, 16, 26, 29, 42,
+     3,  8, 12, 17, 25, 30, 41, 43,
+     9, 11, 18, 24, 31, 40, 44, 53,
+    10, 19, 23, 32, 39, 45, 52, 54,
+    20, 22, 33, 38, 46, 51, 55, 60,
+    21, 34, 37, 47, 50, 56, 59, 61,
+    35, 36, 48, 49, 57, 58, 62, 63
+};
+
 /******************************************************************************
-Description.: Decompress JPEG to RGB using libjpeg
-Input Value.: JPEG data, size, output pointers for RGB data, width, height
+Description.: Convert 16-bit quantization value to 8-bit
+Input Value.: v16 - 16-bit quantization value
+Return Value: 8-bit value (1..255, never 0)
+******************************************************************************/
+static inline uint8_t qt_to_8bit(uint16_t v16)
+{
+    /* JPEG quant value cannot be 0 */
+    if (v16 == 0) return 1;
+    
+    /* Convert 16->8: take upper byte with rounding */
+    uint8_t v8 = (uint8_t)((v16 + 0x80) >> 8);
+    if (v8 == 0) v8 = 1;
+    return v8;
+}
+
+/******************************************************************************
+Description.: Sanitize quantization table: replace zeros with 1
+Input Value.: qt - 64 bytes quantization table (modified in place)
+Return Value: None
+******************************************************************************/
+static void sanitize_qt_8bit(uint8_t *qt)
+{
+    for (int i = 0; i < 64; i++) {
+        if (qt[i] == 0) qt[i] = 1;
+    }
+}
+
+/******************************************************************************
+Description.: Convert quantization table from natural order (DQT) to zigzag order (RFC 2435)
+Input Value.: src_nat - 64 bytes from JPEG DQT (natural order)
+              dst_zig - 64 bytes output buffer for RTP (zigzag order)
+Return Value: None
+******************************************************************************/
+void rtpjpeg_qt_to_zigzag(const uint8_t *src_nat, uint8_t *dst_zig)
+{
+    /* src_nat — 64 bytes from JPEG DQT (natural order),
+       dst_zig — 64 bytes for RTP (zigzag order) */
+    for (int i = 0; i < 64; i++) {
+        uint8_t val = src_nat[rfc2435_zigzag[i]];
+        /* CRITICAL: Ensure no zeros in zigzag-ordered output */
+        if (val == 0) {
+            val = 1; /* Replace zero with 1 */
+        }
+        dst_zig[i] = val;
+    }
+}
+
+/******************************************************************************
+Description.: Extract DQT (Define Quantization Table) segments from JPEG
+Input Value.: JPEG data pointer, size
+Return Value: None (tables cached in global variables)
+******************************************************************************/
+void rtpjpeg_cache_qtables_from_jpeg(const uint8_t *p, size_t sz)
+{
+    /* Reset cache */
+    g_have_luma = 0;
+    g_have_chroma = 0;
+    g_qt_precision = 0;
+    
+    if (!p || sz < 4) return;
+    
+    /* Find SOI marker */
+    if (p[0] != 0xFF || p[1] != 0xD8) return; /* Not a JPEG */
+    
+    size_t i = 2; /* Start after SOI */
+    
+    /* Parse JPEG segments until SOS */
+    while (i + 3 < sz) {
+        /* Skip padding bytes (0xFF) */
+        if (p[i] != 0xFF) {
+            i++;
+            continue;
+        }
+        
+        /* Skip multiple 0xFF bytes */
+        while (i < sz && p[i] == 0xFF) i++;
+        if (i >= sz) break;
+        
+        uint8_t marker = p[i++];
+        
+        /* SOS reached - stop parsing */
+        if (marker == 0xDA) break;
+        
+        /* RSTn markers - no length field */
+        if (marker >= 0xD0 && marker <= 0xD7) continue;
+        
+        /* Need at least 2 bytes for segment length */
+        if (i + 1 >= sz) break;
+        
+        /* Read segment length (big-endian) */
+        uint16_t seglen = ((uint16_t)p[i] << 8) | (uint16_t)p[i + 1];
+        i += 2;
+        
+        if (seglen < 2 || i + (size_t)(seglen - 2) > sz) break;
+        
+        /* DQT marker (0xDB) */
+        if (marker == 0xDB) {
+            /* Parse DQT segment - may contain multiple tables */
+            size_t off = 0;
+            while (off < (size_t)(seglen - 2)) {
+                if (i + off >= sz) break;
+                
+                /* Read Pq (precision) and Tq (table ID) */
+                uint8_t pq_tq = p[i + off++];
+                uint8_t pq = (pq_tq >> 4) & 0x0F;  /* Precision: 0=8-bit, 1=16-bit */
+                uint8_t tq = pq_tq & 0x0F;         /* Table ID: 0=luma, 1=chroma */
+                
+                /* Handle both 8-bit and 16-bit tables */
+                if (pq == 0) {
+                    /* 8-bit table: 64 bytes */
+                    size_t need = 64;
+                    if (off + need > (size_t)(seglen - 2)) break;
+                    
+                    uint8_t *dst = NULL;
+                    if (tq == 0) {
+                        dst = g_qt_luma;
+                        g_have_luma = 1;
+                    } else if (tq == 1) {
+                        dst = g_qt_chroma;
+                        g_have_chroma = 1;
+                    }
+                    
+                    if (dst) {
+                        /* Copy 8-bit table */
+                        memcpy(dst, p + i + off, 64);
+                        /* CRITICAL: Sanitize immediately after copy - ensure no zeros */
+                        for (int k = 0; k < 64; k++) {
+                            if (dst[k] == 0) dst[k] = 1;
+                        }
+                        /* Sanitize: replace zeros with 1 (double check) */
+                        sanitize_qt_8bit(dst);
+                    }
+                    off += need;
+                } else {
+                    /* 16-bit table: 128 bytes -> convert to 8-bit */
+                    size_t need = 128;
+                    if (off + need > (size_t)(seglen - 2)) break;
+                    
+                    uint8_t *dst = NULL;
+                    if (tq == 0) {
+                        dst = g_qt_luma;
+                        g_have_luma = 1;
+                    } else if (tq == 1) {
+                        dst = g_qt_chroma;
+                        g_have_chroma = 1;
+                    }
+                    
+                    if (dst) {
+                        /* Convert 16-bit to 8-bit: read 16-bit values and normalize */
+                        const uint8_t *src_16bit = p + i + off;
+                        for (int k = 0; k < 64; k++) {
+                            uint16_t v16 = ((uint16_t)src_16bit[2*k] << 8) | (uint16_t)src_16bit[2*k + 1];
+                            dst[k] = qt_to_8bit(v16);
+                            /* CRITICAL: Ensure no zeros after conversion */
+                            if (dst[k] == 0) dst[k] = 1;
+                        }
+                        /* Sanitize: replace zeros with 1 (shouldn't be any after qt_to_8bit, but just in case) */
+                        sanitize_qt_8bit(dst);
+                    }
+                    g_qt_precision = 1; /* Remember that source had 16-bit */
+                    off += need;
+                }
+            }
+        }
+        
+        /* Move to next segment */
+        i += (seglen - 2);
+    }
+}
+
+/******************************************************************************
+Description.: Get cached quantization tables
+Input Value.: Output pointers for luma/chroma tables and flags
+Return Value: 0 on success, -1 if no tables cached
+******************************************************************************/
+int rtpjpeg_get_cached_qtables(const uint8_t **luma, const uint8_t **chroma,
+                                int *have_luma, int *have_chroma, int *precision)
+{
+    if (!luma || !chroma || !have_luma || !have_chroma || !precision) return -1;
+    
+    *luma = g_have_luma ? g_qt_luma : NULL;
+    *chroma = g_have_chroma ? g_qt_chroma : NULL;
+    *have_luma = g_have_luma;
+    *have_chroma = g_have_chroma;
+    *precision = g_qt_precision;
+    
+    return (g_have_luma || g_have_chroma) ? 0 : -1;
+}
+
+/******************************************************************************
+Description.: Decompress JPEG to RGB
+Input Value.: JPEG data, size, output pointers for RGB data and dimensions
 Return Value: 0 if ok, -1 on error
 ******************************************************************************/
 int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size, 
                            unsigned char **rgb_data, int *width, int *height, int known_width, int known_height)
 {
-    /* CRITICAL: Use ONLY TurboJPEG - no libjpeg fallback */
-    /* TurboJPEG implementation */
+    /* Validate arguments */
+    if (!jpeg_data || jpeg_size <= 0 || !rgb_data || !width || !height) {
+        return -1;
+    }
+    
+    /* Use TurboJPEG 2.x API */
     tjhandle handle = NULL;
     unsigned char *output_data = NULL;
     int result = -1;
     
-    /* Check for valid JPEG data */
-    if(jpeg_size < 4) {
-        return -1;
-    }
-    
-    /* Check for JPEG magic bytes */
-    if(jpeg_data[0] != 0xFF || jpeg_data[1] != 0xD8) {
-        return -1;
-    }
-    
+    /* Get cached decompress handle */
     handle = get_cached_decompress_handle();
     if (!handle) {
         return -1;
@@ -453,90 +569,21 @@ int compress_rgb_to_jpeg(unsigned char *rgb_data, int width, int height, int qua
     /* Reusing handles with different subsamp can cause TurboJPEG to ignore TJSAMP_422 */
     handle = tjInitCompress();
     if (!handle) {
-        fprintf(stderr, "ERROR: TurboJPEG initialization failed! TurboJPEG is REQUIRED for this project.\n");
-        fprintf(stderr, "Please install libturbojpeg-dev package (on Linux) or turbojpeg (on macOS via Homebrew).\n");
         return -1;
     }
     
     /* CRITICAL: Force 4:2:2 subsampling - use TJSAMP_422 and verify result */
     /* 4:2:2 is optimal for video compression and prevents format switching between frames */
     /* TurboJPEG 2.x may ignore TJSAMP_422 if handle was previously used with different subsamp */
-    /* Use TJFLAG_ACCURATEDCT to prevent TurboJPEG from optimizing subsampling */
     /* CRITICAL: Use RGB input (TJPF_RGB), NOT YUV - TurboJPEG takes subsamp from YUV buffer if used */
+    /* Use 0 flags for clean baseline JPEG */
     result = tjCompress2(handle, rgb_data, width, 0, height, TJPF_RGB, 
                         &output_data, &output_size, TJSAMP_422, quality, 
-                        TJFLAG_ACCURATEDCT);
+                        0);
     
     if (result == 0) {
-        /* CRITICAL: Check EVERY frame for correct subsampling (4:2:2) */
-        /* Format switching between frames (4:2:0 and 4:2:2) causes double SOF0 and VLC flickering */
-        static int frame_count = 0;
-        frame_count++;
-        
-        /* Check for double SOF0 markers in JPEG - this indicates corrupted frame */
-        /* A valid JPEG should have only ONE SOF0 marker */
-        int sof0_count = 0;
-        const unsigned char *jpeg_data_ptr = output_data;
-        size_t jpeg_size_val = output_size;
-        size_t i = 0;
-        
-        /* Search for SOF0 markers (0xFF 0xC0) in JPEG data */
-        while (i < jpeg_size_val - 1) {
-            if (jpeg_data_ptr[i] == 0xFF && jpeg_data_ptr[i+1] == 0xC0) {
-                sof0_count++;
-                if (sof0_count > 1) {
-                    fprintf(stderr, "CRITICAL ERROR: Frame %d: JPEG contains %d SOF0 markers (should be 1) at offset %zu! Surrounding bytes: %02X %02X %02X %02X\n", frame_count, sof0_count, i, jpeg_data_ptr[i-1], jpeg_data_ptr[i], jpeg_data_ptr[i+1], jpeg_data_ptr[i+2]);
-                    fprintf(stderr, "This indicates corrupted JPEG frame assembly - double SOF0 causes 'overread 8' and VLC flickering\n");
-                    tjFree(output_data);
-                    return -1; /* Reject frame with double SOF0 - don't call tjDestroy since handle not created yet */
-                }
-            }
-            i++;
-        }
-        
-        if (sof0_count == 0) {
-            fprintf(stderr, "WARNING: Frame %d: JPEG contains no SOF0 markers!\n", frame_count);
-        }
-        
-        /* CRITICAL: Verify actual subsampling format for EVERY frame */
-        /* TurboJPEG may ignore TJSAMP_422 and generate 4:2:0 instead */
-        /* This causes format switching between frames (4:2:0 and 4:2:2) */
-        tjhandle decompress_handle = tjInitDecompress();
-        if (decompress_handle) {
-            int actual_width = 0, actual_height = 0, actual_subsamp = 0;
-            if (tjDecompressHeader2(decompress_handle, output_data, output_size, 
-                                   &actual_width, &actual_height, &actual_subsamp) == 0) {
-                /* Check if actual subsampling matches requested (TJSAMP_422 = 1) */
-                if (actual_subsamp != TJSAMP_422) {
-                    fprintf(stderr, "CRITICAL ERROR: Frame %d: TurboJPEG using subsampling %d instead of TJSAMP_422 (1)!\n", frame_count, actual_subsamp);
-                    fprintf(stderr, "Requested: 4:2:2 (TJSAMP_422=1), Got: %s\n", 
-                           actual_subsamp == TJSAMP_420 ? "4:2:0 (TJSAMP_420=0)" : 
-                           actual_subsamp == TJSAMP_422 ? "4:2:2 (TJSAMP_422=1)" : 
-                           actual_subsamp == TJSAMP_444 ? "4:4:4 (TJSAMP_444=2)" : "unknown");
-                    fprintf(stderr, "This causes format switching between frames (4:2:0 and 4:2:2) and VLC flickering\n");
-                    fprintf(stderr, "Frame %d will be rejected - this is a critical error!\n", frame_count);
-                    tjDestroy(decompress_handle);
-                    tjFree(output_data);
-                    return -1; /* Reject frame with wrong subsampling */
-                } else {
-                    /* Log first 10 frames, then every 100th frame */
-                    if (frame_count <= 10 || (frame_count % 100 == 0)) {
-                        fprintf(stderr, "OK: Frame %d: TurboJPEG 2.x using TJSAMP_422 (4:2:2) as requested\n", frame_count);
-                    }
-                }
-            } else {
-                fprintf(stderr, "WARNING: Frame %d: Failed to read JPEG header to verify subsampling\n", frame_count);
-            }
-            tjDestroy(decompress_handle);
-        } else {
-            fprintf(stderr, "ERROR: Frame %d: Failed to initialize TurboJPEG decompress handle for verification\n", frame_count);
-        }
-        
-        /* Assign output data - verification passed (or verification failed but we still want to use the frame) */
         *jpeg_data = output_data;
         *jpeg_size = output_size;
-    } else {
-        fprintf(stderr, "ERROR: TurboJPEG compression failed! TurboJPEG is REQUIRED for this project.\n");
     }
     
     /* CRITICAL: Always destroy handle after use to prevent subsamp contamination */
@@ -546,19 +593,164 @@ int compress_rgb_to_jpeg(unsigned char *rgb_data, int width, int height, int qua
 }
 
 /******************************************************************************
+Description.: Strip JPEG to RTP/JPEG format (RFC 2435)
+Input Value.: Full JPEG (SOI...EOI), dimensions, output buffer and size
+Return Value: 0 if ok, -1 on error
+
+STEP 1: Simple version - just trim JPEG to first EOI marker
+******************************************************************************/
+
+int jpeg_strip_to_rtp(const unsigned char *jfif, size_t jfif_sz,
+                     unsigned char *out, size_t *out_sz,
+                     uint16_t w, uint16_t h, int subsamp)
+{
+    if (!jfif || !out || !out_sz || jfif_sz < 4 || w == 0 || h == 0) {
+        return -1;
+    }
+
+    /* 1) Find first SOI (FF D8). If input doesn't start with SOI, resync to the first SOI. */
+    size_t offset = 0;
+    if (!(jfif[0] == 0xFF && jfif[1] == 0xD8)) {
+        size_t i;
+        for (i = 0; i + 1 < jfif_sz; ++i) {
+            if (jfif[i] == 0xFF && jfif[i + 1] == 0xD8) {
+                offset = i;
+                break;
+            }
+        }
+        if (offset == 0 && !(jfif[0] == 0xFF && jfif[1] == 0xD8)) {
+#ifdef OPRINT
+            OPRINT("[RTP WARNING] SOI not found in input JPEG\n");
+#else
+            printf("[RTP WARNING] SOI not found in input JPEG\n");
+#endif
+            return -1;
+        }
+    }
+
+    const unsigned char *p = jfif + offset;
+    size_t sz = jfif_sz - offset;
+
+    /* 2) Walk through metadata segments until SOS (FF DA). */
+    size_t pos = 2; /* after SOI */
+    while (pos + 1 < sz) {
+        if (p[pos] != 0xFF) {
+            /* tolerate fill/data until next marker prefix */
+            pos++;
+            continue;
+        }
+
+        /* skip fill bytes FF FF ... */
+        while (pos < sz && p[pos] == 0xFF) pos++;
+        if (pos >= sz) break;
+
+        unsigned char marker = p[pos++];
+        if (marker == 0xDA) {
+            /* SOS: start of entropy-coded scan */
+            break;
+        }
+        if (marker == 0xD9) {
+            /* EOI encountered before SOS - degenerate case, trim here */
+            size_t eoi_pos = pos;
+            if (eoi_pos > sz) eoi_pos = sz;
+            memcpy(out, p, eoi_pos);
+            *out_sz = eoi_pos;
+            return 0;
+        }
+        if (marker >= 0xD0 && marker <= 0xD7) {
+            /* RSTn have no length */
+            continue;
+        }
+
+        /* All other markers carry a 2-byte length (including itself) */
+        if (pos + 1 >= sz) {
+#ifdef OPRINT
+            OPRINT("[RTP WARNING] Truncated JPEG segment header before SOS\n");
+#else
+            printf("[RTP WARNING] Truncated JPEG segment header before SOS\n");
+#endif
+            break;
+        }
+        uint16_t seglen = (uint16_t)((p[pos] << 8) | p[pos + 1]);
+        pos += 2;
+
+        if (seglen < 2 || pos + (size_t)(seglen - 2) > sz) {
+#ifdef OPRINT
+            OPRINT("[RTP WARNING] Truncated JPEG segment body before SOS (len=%u)\n", seglen);
+#else
+            printf("[RTP WARNING] Truncated JPEG segment body before SOS (len=%u)\n", seglen);
+#endif
+            break;
+        }
+        pos += (size_t)(seglen - 2);
+    }
+
+    /* 3) In the scan: find the first non-stuffed EOI (FF D9 not preceded by FF 00). */
+    size_t i = pos;
+    size_t eoi_pos = 0;
+    while (i + 1 < sz) {
+        if (p[i] == 0xFF) {
+            unsigned char b = p[i + 1];
+
+            if (b == 0x00) {
+                /* Stuffed 0xFF data byte inside entropy data */
+                i += 2;
+                continue;
+            }
+            if (b == 0xD9) {
+                /* Real EOI */
+                eoi_pos = i + 2;
+                break;
+            }
+            if (b >= 0xD0 && b <= 0xD7) {
+                /* Restart markers inside scan */
+                i += 2;
+                continue;
+            }
+
+            /* Any other marker inside the scan: skip marker and continue searching */
+            i += 2;
+            continue;
+        }
+        i++;
+    }
+
+    /* 4) Fallbacks: if no explicit EOI found, accept trailing EOI or entire buffer. */
+    if (eoi_pos == 0) {
+        if (sz >= 2 && p[sz - 2] == 0xFF && p[sz - 1] == 0xD9) {
+            eoi_pos = sz;
+        } else {
+#ifdef OPRINT
+            OPRINT("[RTP WARNING] EOI not found in scan, using end of buffer as frame boundary\n");
+#else
+            printf("[RTP WARNING] EOI not found in scan, using end of buffer as frame boundary\n");
+#endif
+            eoi_pos = sz;
+        }
+    }
+
+    /* 5) Copy strictly up to the first EOI (do NOT include any bytes after EOI). */
+    if (eoi_pos > sz) eoi_pos = sz;
+    memcpy(out, p, eoi_pos);
+    *out_sz = eoi_pos;
+
+#ifdef OPRINT
+    OPRINT("[RTP INFO] JPEG sanitized: in=%zu, out=%zu, offset=%zu\n", jfif_sz, *out_sz, offset);
+#else
+    printf("[RTP INFO] JPEG sanitized: in=%zu, out=%zu, offset=%zu\n", jfif_sz, *out_sz, offset);
+#endif
+    return 0;
+}
+
+/******************************************************************************
 Description.: Get cached decompress handle (performance optimization)
 Input Value.: None
 Return Value: TurboJPEG decompress handle
 ******************************************************************************/
 static tjhandle get_cached_decompress_handle(void)
 {
-    /* CRITICAL: Use ONLY TurboJPEG - no libjpeg fallback */
     if (!cached_decompress_handle) {
         cached_decompress_handle = tjInitDecompress();
-        if (!cached_decompress_handle) {
-            fprintf(stderr, "ERROR: TurboJPEG decompress initialization failed! TurboJPEG is REQUIRED for this project.\n");
-            fprintf(stderr, "Please install libturbojpeg-dev package (on Linux) or turbojpeg (on macOS via Homebrew).\n");
-        }
     }
     return cached_decompress_handle;
 }
@@ -570,13 +762,8 @@ Return Value: TurboJPEG compress handle
 ******************************************************************************/
 static tjhandle get_cached_compress_handle(void)
 {
-    /* CRITICAL: Use ONLY TurboJPEG - no libjpeg fallback */
     if (!cached_compress_handle) {
         cached_compress_handle = tjInitCompress();
-        if (!cached_compress_handle) {
-            fprintf(stderr, "ERROR: TurboJPEG compress initialization failed! TurboJPEG is REQUIRED for this project.\n");
-            fprintf(stderr, "Please install libturbojpeg-dev package (on Linux) or turbojpeg (on macOS via Homebrew).\n");
-        }
     }
     return cached_compress_handle;
 }
@@ -622,10 +809,14 @@ const unsigned char jpeg_default_qt_chroma[64] = {
     99,99,99,99,99,99,99,99
 };
 
+/******************************************************************************
+Description.: Get JPEG header info using TurboJPEG
+Input Value.: JPEG data, size, output pointers for width, height, subsamp
+Return Value: 0 if ok, -1 on error
+******************************************************************************/
 int turbojpeg_header_info(const unsigned char *jpeg_data, int jpeg_size,
                           int *width, int *height, int *subsamp)
 {
-    /* CRITICAL: Use ONLY TurboJPEG - no libjpeg fallback */
     if (!jpeg_data || jpeg_size <= 0 || !width || !height || !subsamp) return -1;
     tjhandle handle = get_cached_decompress_handle();
     if (!handle) return -1;
@@ -634,63 +825,57 @@ int turbojpeg_header_info(const unsigned char *jpeg_data, int jpeg_size,
     return (rc == 0) ? 0 : -1;
 }
 
-/******************************************************************************
-Description.: Recompress JPEG to baseline with default Huffman tables
-Input Value.: input JPEG data, size, output pointers for JPEG data and size
-Return Value: 0 if ok, -1 on error
-******************************************************************************/
-int recompress_jpeg_to_baseline_with_default_dht(const unsigned char *input_jpeg, int input_size,
-                                                 unsigned char **output_jpeg, unsigned long *output_size,
-                                                 int quality, int target_subsamp)
-{
-    /* CRITICAL: Decompress to RGB, then recompress with baseline (default DHT) */
-    /* This ensures RFC 2435 compatibility - scan data uses standard Huffman tables */
-    
-    if (!input_jpeg || input_size <= 0 || !output_jpeg || !output_size) return -1;
-    
-    /* Get dimensions and subsampling from input JPEG */
-    int width = 0, height = 0, subsamp = -1;
-    if (turbojpeg_header_info(input_jpeg, input_size, &width, &height, &subsamp) != 0) {
-        return -1;
-    }
-    
-    int output_subsamp = subsamp;
-    if (target_subsamp >= 0) {
-        output_subsamp = target_subsamp;
-    }
+#include <stdint.h>
 
-    /* Decompress to RGB */
-    unsigned char *rgb_data = NULL;
-    if (jpeg_decompress_to_rgb((unsigned char *)input_jpeg, input_size, &rgb_data, 
-                               &width, &height, width, height) != 0) {
-        return -1;
-    }
-    
-    /* Recompress to baseline JPEG with default DHT (no TJFLAG_OPTIMIZE) */
-    /* CRITICAL: Use NEW handle for each compression to avoid subsamp contamination */
-    tjhandle compress_handle = tjInitCompress();
-    if (!compress_handle) {
-        free(rgb_data);
-        return -1;
-    }
-    
-    unsigned char *jpeg_output = NULL;
-    unsigned long jpeg_output_size = 0;
-    
-    /* Compress with baseline (default DHT) - NO TJFLAG_OPTIMIZE */
-    /* Use 0 flags (no optimization) = default Huffman tables */
-    int result = tjCompress2(compress_handle, rgb_data, width, 0, height, TJPF_RGB,
-                            &jpeg_output, &jpeg_output_size, output_subsamp, quality, 0);
-    
-    free(rgb_data);
-    tjDestroy(compress_handle);
-    
-    if (result == 0) {
-        *output_jpeg = jpeg_output;
-        *output_size = jpeg_output_size;
-        return 0;
-    }
-    
-    return -1;
+typedef struct {
+	uint8_t hs[3], vs[3];
+	uint8_t ncomp;
+} jpeg_sampling_t;
+
+static int parse_sof0_sampling(const uint8_t *p, size_t sz, jpeg_sampling_t *s)
+{
+	size_t i = 2;
+	while (i + 3 < sz) {
+		if (p[i] != 0xFF) { i++; continue; }
+		while (i < sz && p[i] == 0xFF) i++;
+		if (i >= sz) break;
+		uint8_t m = p[i++];
+		if (m == 0xDA) break; // SOS
+		if (m == 0xC0) { // SOF0
+			if (i + 7 >= sz) return -1;
+			uint16_t seglen = (p[i] << 8) | p[i + 1];
+			i += 2;
+			if (seglen < 8 || i + seglen - 2 > sz) return -1;
+			i += 3 + 2 + 2; // precision + height + width
+			uint8_t n = p[i++];
+			s->ncomp = n > 3 ? 3 : n;
+			for (uint8_t k = 0; k < s->ncomp; k++) {
+				if (i + 2 >= sz) return -1;
+				i++; // component id
+				uint8_t hv = p[i++];
+				s->hs[k] = hv >> 4;
+				s->vs[k] = hv & 0x0F;
+				i++; // Q table id
+			}
+			return 0;
+		} else {
+			if (i + 1 >= sz) return -1;
+			uint16_t seglen = (p[i] << 8) | p[i + 1];
+			i += 2 + (seglen > 2 ? seglen - 2 : 0);
+		}
+	}
+	return -1;
 }
 
+static uint8_t rtp_jpeg_type_from_sampling(const jpeg_sampling_t *s)
+{
+	if (s->ncomp == 3 && s->hs[0] == 2 && s->vs[0] == 1 && s->hs[1] == 1 && s->vs[1] == 1)
+		return 1; // 4:2:2
+	if (s->ncomp == 3 && s->hs[0] == 2 && s->vs[0] == 2 && s->hs[1] == 1 && s->vs[1] == 1)
+		return 0; // 4:2:0
+	if (s->ncomp == 3 && s->hs[0] == 1 && s->vs[0] == 1)
+		return 2; // 4:4:4
+	if (s->ncomp == 1)
+		return 3; // grayscale
+	return 1;
+}

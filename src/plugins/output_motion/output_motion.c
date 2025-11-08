@@ -1,24 +1,3 @@
-/*******************************************************************************
-#                                                                              #
-#      MJPG-streamer allows to stream JPG frames from an input-plugin          #
-#      to several output plugins                                               #
-#                                                                              #
-#      Copyright (C) 2007 Tom Stöveken                                         #
-#                                                                              #
-# This program is free software; you can redistribute it and/or modify         #
-# it under the terms of the GNU General Public License as published by         #
-# the Free Software Foundation; version 2 of the License.                      #
-#                                                                              #
-# This program is distributed in the hope that it will be useful,              #
-# but WITHOUT ANY WARRANTY; without even the implied warranty of               #
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the                #
-# GNU General Public License for more details.                                 #
-#                                                                              #
-# You should have received a copy of the GNU General Public License            #
-# along with this program; if not, write to the Free Software                  #
-# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA    #
-#                                                                              #
-*******************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,14 +17,7 @@
 #include <syslog.h>
 #include <dirent.h>
 #include <sys/queue.h>
-#ifdef HAVE_CURL
 #include <curl/curl.h>
-#endif
-
-#ifdef HAVE_JPEG
-#include <jpeglib.h>
-#include <jerror.h>
-#endif
 
 /* Use centralized JPEG utilities */
 #include "../../jpeg_utils.h"
@@ -67,11 +39,7 @@ typedef unsigned long long __u64;
 #define OUTPUT_PLUGIN_NAME "MOTION output plugin"
 
 // Forward declarations
-int send_webhook_notification_sync(
-#ifdef HAVE_CURL
-    CURL *curl_handle, 
-#endif
-    double motion_level, time_t timestamp);
+int send_webhook_notification_sync(CURL *curl_handle, double motion_level, time_t timestamp);
 
 // Webhook queue structure
 struct webhook_item {
@@ -117,7 +85,6 @@ static unsigned char *prev_frame = NULL;
 static unsigned char *current_frame = NULL;
 static unsigned char *blur_buffer = NULL;  // Buffer for blur filter
 static unsigned char *autolevels_buffer = NULL;  // Buffer for auto levels
-static int prev_width = 0, prev_height = 0;
 static int scaled_width = 0, scaled_height = 0;
 static time_t last_motion_time = 0;
 static time_t last_motion_overload_time = 0;
@@ -314,9 +281,7 @@ void worker_cleanup(void *arg)
     }
     pthread_mutex_unlock(&webhook_mutex);
 
-#ifdef HAVE_CURL
     curl_global_cleanup();
-#endif
 
     /* Cleanup cached TurboJPEG handles */
     cleanup_turbojpeg_handles();
@@ -364,84 +329,6 @@ void convert_to_grayscale_scale(unsigned char *src, unsigned char *dst,
 /* validate_jpeg_data now provided by jpeg_utils.h */
 
 /* decode_jpeg_to_gray_scaled now provided by jpeg_utils.h */
-
-/******************************************************************************
-Description.: Convert MJPEG to grayscale and scale down
-Input Value.: source buffer, destination buffer, dimensions
-Return Value: -
-******************************************************************************/
-void convert_mjpeg_to_grayscale_scale(unsigned char *src, unsigned char *dst, 
-                                     int src_width, int src_height, int scale)
-{
-#ifdef HAVE_JPEG
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    JSAMPROW row_pointer[1];
-    unsigned char *rgb_buffer = NULL;
-    int dst_width = src_width / scale;
-    int dst_height = src_height / scale;
-    
-    // Initialize JPEG decompression
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_decompress(&cinfo);
-    
-    // Set source buffer
-    jpeg_mem_src(&cinfo, src, src_width * src_height);
-    
-    // Read JPEG header
-    if(jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-        LOG("Failed to read JPEG header\n");
-        jpeg_destroy_decompress(&cinfo);
-        return;
-    }
-    
-    // Start decompression
-    jpeg_start_decompress(&cinfo);
-    
-    // Allocate RGB buffer
-    rgb_buffer = malloc(cinfo.output_width * cinfo.output_height * 3);
-    if(rgb_buffer == NULL) {
-        LOG("Failed to allocate RGB buffer\n");
-        jpeg_finish_decompress(&cinfo);
-        jpeg_destroy_decompress(&cinfo);
-        return;
-    }
-    
-    // Read RGB data
-    int row = 0;
-    while(cinfo.output_scanline < cinfo.output_height) {
-        row_pointer[0] = &rgb_buffer[row * cinfo.output_width * 3];
-        jpeg_read_scanlines(&cinfo, row_pointer, 1);
-        row++;
-    }
-    
-    // Finish decompression
-    jpeg_finish_decompress(&cinfo);
-    jpeg_destroy_decompress(&cinfo);
-    
-    // Convert RGB to grayscale and scale down
-    convert_to_grayscale_scale(rgb_buffer, dst, cinfo.output_width, cinfo.output_height, scale);
-    
-    free(rgb_buffer);
-#else
-    // Fallback: simple approximation (not accurate)
-    int dst_width = src_width / scale;
-    int dst_height = src_height / scale;
-    
-    for(int y = 0; y < dst_height; y++) {
-        for(int x = 0; x < dst_width; x++) {
-            int src_x = x * scale;
-            int src_y = y * scale;
-            
-            // Simple brightness extraction from MJPEG (approximation)
-            int pixel_offset = src_y * src_width + src_x;
-            if(pixel_offset < src_width * src_height) {
-                dst[y * dst_width + x] = src[pixel_offset] & 0xFF;
-            }
-        }
-    }
-#endif
-}
 
 /******************************************************************************
 Description.: Apply optimized 3x3 blur filter using separable convolution
@@ -847,7 +734,6 @@ Return Value: NULL
 ******************************************************************************/
 void* webhook_worker_thread(void *param)
 {
-#ifdef HAVE_CURL
     CURL *curl_handle = NULL;
     
     curl_handle = curl_easy_init();
@@ -862,7 +748,6 @@ void* webhook_worker_thread(void *param)
     curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 3L);
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "mjpg-streamer-motion/1.0");
-#endif
     
     while(webhook_thread_running) {
         struct webhook_item *item = NULL;
@@ -881,9 +766,7 @@ void* webhook_worker_thread(void *param)
         
         if(item != NULL) {
             // Send webhook
-#ifdef HAVE_CURL
             send_webhook_notification_sync(curl_handle, item->motion_level, item->timestamp);
-#endif
             free(item);
             
             // Mark webhook as completed
@@ -893,11 +776,9 @@ void* webhook_worker_thread(void *param)
         }
     }
     
-#ifdef HAVE_CURL
     if(curl_handle != NULL) {
         curl_easy_cleanup(curl_handle);
     }
-#endif
     
     return NULL;
 }
@@ -907,15 +788,8 @@ Description.: Send webhook notification (sync - called from worker thread)
 Input Value.: curl handle, motion level, timestamp
 Return Value: 0 on success, -1 on error
 ******************************************************************************/
-int send_webhook_notification_sync(
-#ifdef HAVE_CURL
-    CURL *curl_handle, 
-#endif
-    double motion_level, time_t timestamp)
+int send_webhook_notification_sync(CURL *curl_handle, double motion_level, time_t timestamp)
 {
-#ifndef HAVE_CURL
-    return 0; // CURL not available
-#else
     if(webhook_url == NULL || curl_handle == NULL) {
         return 0; // No webhook URL specified
     }
@@ -953,7 +827,6 @@ int send_webhook_notification_sync(
     OPRINT("webhook %s notification sent (motion level: %.1f%%)\n", 
            webhook_post ? "POST" : "GET", motion_level);
     return 0;
-#endif
 }
 
 /******************************************************************************
@@ -1094,12 +967,6 @@ void *worker_thread(void *arg)
         scaled_width = width;
         scaled_height = height;
         
-        // Update dimensions tracking
-        if(prev_width != scaled_width || prev_height != scaled_height) {
-            prev_width = scaled_width;
-            prev_height = scaled_height;
-        }
-        
         // Use gray_data directly instead of copying - avoid unnecessary memcpy
         // This eliminates one memory copy operation per frame
         unsigned char *current_scaled_frame = gray_data;
@@ -1201,6 +1068,9 @@ void *worker_thread(void *arg)
                     if(webhook_url != NULL) {
                         send_webhook_notification_async(motion_level);
                     }
+                    
+                    /* Reset sequence counter after sending webhook to require new sequence for next motion event */
+                    motion_sequence_count = 0;
                 }
             }
             /* Update previous frame to prevent accumulation */
@@ -1367,9 +1237,12 @@ int output_init(output_parameter *param, int id)
     }
 
     /* Initialize webhook thread if webhook URL is specified */
-#ifdef HAVE_CURL
     if(webhook_url != NULL) {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
+        CURLcode curl_res = curl_global_init(CURL_GLOBAL_DEFAULT);
+        if(curl_res != CURLE_OK) {
+            OPRINT("ERROR: failed to initialize CURL: %s\n", curl_easy_strerror(curl_res));
+            return 1;
+        }
         
         // Start webhook worker thread
         webhook_thread_running = 1;
@@ -1381,12 +1254,6 @@ int output_init(output_parameter *param, int id)
         
         OPRINT("webhook thread started\n");
     }
-#else
-    if(webhook_url != NULL) {
-        OPRINT("WARNING: webhook URL specified but CURL not available\n");
-        webhook_url = NULL; // Disable webhook functionality
-    }
-#endif
 
     /* Create save folder if specified */
     if(save_folder != NULL) {
