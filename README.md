@@ -366,6 +366,9 @@ curl http://localhost:8554/snapshot -o snapshot.jpg
 - TCP and UDP transport modes
 - TurboJPEG accelerated frame processing
 - SIMD-optimized memory operations
+- Optimized client management (50% reduction in iteration overhead)
+- O(1) client lookup optimization
+- Single mutex lock per frame for all client operations
 
 **Alternative solutions:**
 - Use external timestamp synchronization tools

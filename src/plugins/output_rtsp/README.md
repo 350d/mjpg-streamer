@@ -70,10 +70,33 @@ curl -I http://127.0.0.1:8554/snapshot
 - **SIMD Optimized**: SSE2/NEON accelerated memory operations
 - **TurboJPEG**: Hardware-accelerated JPEG recompression
 - **Frame Processing**: Baseline JPEG conversion with proper fragmentation
+- **Optimized Client Management**: Single-pass client processing with O(1) client lookup
+- **Memory Optimized**: Early EOI validation, minimized allocations
+- **Mutex Optimization**: Single mutex lock per frame for all client operations
+
+## ⚡ Performance Optimizations
+
+### Client Management
+- **Unified Client Loops**: Reduced from 4 separate loops to 2 optimized passes
+- **O(1) Client Lookup**: Direct client index passing eliminates O(MAX_CLIENTS) search
+- **Early Exit**: Skip inactive clients immediately with `continue`
+- **Single Mutex Lock**: All client operations in one critical section
+
+### Memory Management
+- **Early EOI Validation**: Check for EOI markers before memory allocation
+- **Minimized Allocations**: Avoid unnecessary memory allocation on errors
+- **SIMD Memory Operations**: All memory copies use `simd_memcpy` for acceleration
+
+### Network Optimization
+- **TCP_NODELAY**: Automatic TCP_NODELAY setup for TCP clients
+- **Optimized Packetization**: Efficient RTP packet construction with minimal overhead
+- **Client Cleanup**: Complete client state cleanup on disconnect/error
 
 ## 📊 Performance
 
 - **HD Streaming (1280x720@30fps)**: 5-10% CPU
 - **Full HD (1920x1080@30fps)**: 10-15% CPU
 - **Memory**: ~10MB static buffers + ~50KB per client
+- **Client Processing**: ~50% reduction in iteration overhead (4 loops → 2 loops)
+- **Client Lookup**: O(MAX_CLIENTS) → O(1) optimization
 

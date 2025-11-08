@@ -27,17 +27,7 @@
 #define MAX_TCP_PACKET_SIZE 8192  // Larger packet size for TCP to reduce fragmentation
 #define MAX_FRAME_SIZE (10 * 1024 * 1024)  // 10MB max frame size
 
-/* RFC 2435 zigzag order (as in FFmpeg libavformat/rtpenc_jpeg.c) */
-static const uint8_t rfc2435_zigzag[64] = {
-    0,  1,  5,  6, 14, 15, 27, 28,
-    2,  4,  7, 13, 16, 26, 29, 42,
-    3,  8, 12, 17, 25, 30, 41, 43,
-    9, 11, 18, 24, 31, 40, 44, 53,
-   10, 19, 23, 32, 39, 45, 52, 54,
-   20, 22, 33, 38, 46, 51, 55, 60,
-   21, 34, 37, 47, 50, 56, 59, 61,
-   35, 36, 48, 49, 57, 58, 62, 63
-};
+/* GStreamer style: QT tables are used in natural order (as in DQT), no zigzag conversion */
 
 typedef struct {
     int socket;
@@ -264,17 +254,19 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         OPRINT("[RTP ERROR] Empty scan segment\n");
         return -1;
     }
+    
+    /* Optimize: Check for EOI before allocation */
+    if (scan_len >= 2 && jpeg_data[scan_start + scan_len - 2] == 0xFF && jpeg_data[scan_start + scan_len - 1] == 0xD9) {
+        OPRINT("[RTP ERROR] Scan buffer ends with EOI unexpectedly\n");
+        return -1;
+    }
+    
     unsigned char *scan_only = (unsigned char *)malloc(scan_len);
     if (!scan_only) {
         OPRINT("[RTP ERROR] Failed to allocate scan buffer (%zu bytes)\n", scan_len);
         return -1;
     }
     simd_memcpy(scan_only, jpeg_data + scan_start, scan_len);
-    if (scan_len >= 2 && scan_only[scan_len - 2] == 0xFF && scan_only[scan_len - 1] == 0xD9) {
-        free(scan_only);
-        OPRINT("[RTP ERROR] Scan buffer ends with EOI unexpectedly\n");
-        return -1;
-    }
 
     /* Store scan-only payload for RTP transmission */
     frame_info->rtp_payload = scan_only;
@@ -327,6 +319,19 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
                           frame_info->width, frame_info->height);
                }
 
+    /* DIAGNOSTIC: Dump source JPEG header (first 200 bytes) */
+    static int jpeg_dump_count = 0;
+    if (jpeg_dump_count++ < 3) {
+        const char *jpeg_dump_file = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/rtsp_diagnostics/source_jpeg_header.bin";
+        FILE *jpeg_file = fopen(jpeg_dump_file, "wb");
+        if (jpeg_file) {
+            size_t dump_size = (eoi_pos < 200) ? eoi_pos : 200;
+            fwrite(jpeg_data, 1, dump_size, jpeg_file);
+            fclose(jpeg_file);
+            OPRINT("[RTP DIAG] Dumped source JPEG header (%zu bytes) to %s\n", dump_size, jpeg_dump_file);
+        }
+    }
+    
     /* CRITICAL: Extract and cache quantization tables from source JPEG BEFORE extracting scan data.
      * Store tables in frame structure to avoid race condition with global cache.
      * Tables will be included in RTP payload if Q=255 is set.
@@ -341,17 +346,34 @@ static int prepare_rtp_jpeg_frame(const unsigned char *jpeg_data, size_t jpeg_si
         frame_info->have_chroma = have_chroma;
         frame_info->qt_precision = qt_precision;
         if (have_luma && qt_luma_ptr) {
-            memcpy(frame_info->qt_luma, qt_luma_ptr, 64);
+            simd_memcpy(frame_info->qt_luma, qt_luma_ptr, 64);
             /* NO sanitization - preserve original values as-is */
         }
         if (have_chroma && qt_chroma_ptr) {
-            memcpy(frame_info->qt_chroma, qt_chroma_ptr, 64);
+            simd_memcpy(frame_info->qt_chroma, qt_chroma_ptr, 64);
             /* NO sanitization - preserve original values as-is */
         }
         static int cache_log_count = 0;
         if (cache_log_count++ < 5) {
             OPRINT("[RTP DEBUG] Quantization tables cached: have_luma=%d, have_chroma=%d, precision=%d\n",
                    have_luma, have_chroma, qt_precision);
+        }
+        
+        /* DIAGNOSTIC: Dump extracted QT tables (natural order) */
+        static int qt_dump_count = 0;
+        if (qt_dump_count++ < 3) {
+            const char *qt_dump_file = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/rtsp_diagnostics/qt_extracted_natural.bin";
+            FILE *qt_file = fopen(qt_dump_file, "wb");
+            if (qt_file) {
+                if (have_luma && qt_luma_ptr) {
+                    fwrite(qt_luma_ptr, 1, 64, qt_file);
+                }
+                if (have_chroma && qt_chroma_ptr) {
+                    fwrite(qt_chroma_ptr, 1, 64, qt_file);
+                }
+                fclose(qt_file);
+                OPRINT("[RTP DIAG] Dumped extracted QT tables (natural order) to %s\n", qt_dump_file);
+            }
         }
     } else {
         frame_info->have_luma = 0;
@@ -372,7 +394,7 @@ Input Value.: client, prepared frame info, timestamp
 Return Value: 0 on success, -1 on error
 ******************************************************************************/
 static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg_frame_t *frame,
-                           uint32_t frame_timestamp)
+                           uint32_t frame_timestamp, int client_idx)
 {
     /* Initialize QT insertion settings */
     const int qt_insertion_enabled = 1; /* ENABLED: RFC 2435 QT header insertion */
@@ -466,8 +488,9 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
         /* We calculate it here, but actual building happens later after packet creation */
         size_t qt_hdr_len = 0;
         if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
-            /* Calculate QT header size: MBZ(1) + Pq(1) + Lq(2) + [Tq(1) + 64 bytes]*2 */
-            qt_hdr_len = 4 + 65 + 65; /* MBZ,Pq,Lq + (Tq+64)*2 */
+            /* Calculate QT header size: MBZ(1) + Precision(1) + Length(2) + QT data (64+64=128) */
+            /* GStreamer style: no Tq bytes, just QT tables in natural order */
+            qt_hdr_len = 4 + 128; /* MBZ + Precision + Length + QT data (luma + chroma) */
         }
 
         /* Calculate payload size: reduce by qt_hdr_len if QT header will be inserted */
@@ -530,29 +553,20 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
         
         /* Build and insert QT header if needed (for first fragment with Q=255) */
         if (qt_insertion_enabled && fragment_offset == 0 && q_value_fixed == 255) {
-            /* Quantization Table Header (RFC 2435 Section 3.1.8)
-             * Convert from NATURAL order (DQT) to ZIGZAG order (as FFmpeg expects)
-             * Validate for zeros AFTER zigzag conversion
+            /* Quantization Table Header (GStreamer style - RFC 2435 Section 3.1.8)
+             * Use QT tables in NATURAL order (as in DQT), no zigzag conversion
+             * No Tq bytes before each table - just copy QT data directly
              */
             
-            /* Convert tables from natural order (DQT) to zigzag order (RFC 2435) */
-            uint8_t lz[64], cz[64];
-            for (int i = 0; i < 64; i++) {
-                lz[i] = frame->qt_luma[rfc2435_zigzag[i]];
-            }
-            for (int i = 0; i < 64; i++) {
-                cz[i] = frame->qt_chroma[rfc2435_zigzag[i]];
-            }
-            
-            /* Validate: FFmpeg crashes on zeros/garbage */
+            /* Validate: check for zeros in QT tables */
             int found_zero = 0;
             for (int i = 0; i < 64; i++) {
-                if (!lz[i] || !cz[i]) {
+                if (!frame->qt_luma[i] || !frame->qt_chroma[i]) {
                     found_zero = 1;
                     static int zero_log_count = 0;
                     if (zero_log_count++ < 3) {
-                        OPRINT("[RTP WARNING] Found zero in zigzag-ordered QT table (lz[%d]=%d, cz[%d]=%d), falling back to Q=75\n",
-                               i, lz[i], i, cz[i]);
+                        OPRINT("[RTP WARNING] Found zero in QT table (luma[%d]=%d, chroma[%d]=%d), falling back to Q=75\n",
+                               i, frame->qt_luma[i], i, frame->qt_chroma[i]);
                     }
                     break;
                 }
@@ -566,11 +580,12 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
                 packet[17] = (unsigned char)q_value_fixed;
                 static int qt_fallback_log_count = 0;
                 if (qt_fallback_log_count++ < 3) {
-                    OPRINT("[RTP WARNING] QT disabled, fallback Q=75 (no DQT) - zero found in zigzag tables\n");
+                    OPRINT("[RTP WARNING] QT disabled, fallback Q=75 - zero found in QT tables\n");
                 }
             } else {
-                /* Build QT header: MBZ(1) + Pq(1) + Lq(2) + [Tq(1) + 64 bytes] per table */
-                size_t qt_hdr_len_calc = 4 + 65 + 65; /* MBZ,Pq,Lq + (Tq+64)*2 */
+                /* Build QT header: MBZ(1) + Precision(1) + Length(2) + QT data (64+64=128) */
+                /* GStreamer style: no Tq bytes, just QT tables in natural order */
+                size_t qt_hdr_len_calc = 4 + 128; /* MBZ + Precision + Length + QT data */
                 
                 /* Check that QT header fits in first packet */
                 if (20 + qt_hdr_len_calc >= max_packet_size) {
@@ -580,22 +595,21 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
                     packet[17] = (unsigned char)q_value_fixed;
                     static int qt_fallback_log_count = 0;
                     if (qt_fallback_log_count++ < 3) {
-                        OPRINT("[RTP WARNING] QT disabled, fallback Q=75 (no DQT) - QT header too large\n");
+                        OPRINT("[RTP WARNING] QT disabled, fallback Q=75 - QT header too large\n");
                     }
                 } else {
-                    uint8_t qt_hdr[4 + 130];
+                    uint8_t qt_hdr[4 + 128];
                     size_t off = 0;
                     
                     qt_hdr[off++] = 0x00;                 /* MBZ */
-                    qt_hdr[off++] = 0x00;                 /* Pq=0 (8-bit) */
-                    uint16_t Lq = 130;                    /* (Tq+64)*2 */
+                    qt_hdr[off++] = 0x00;                 /* Precision=0 (8-bit) */
+                    uint16_t Lq = 128;                    /* Length: size of QT data (64+64) */
                     qt_hdr[off++] = (Lq >> 8) & 0xFF;
                     qt_hdr[off++] = Lq & 0xFF;
-                    qt_hdr[off++] = 0x00;                 /* Tq=0 (luma) */
-                    memcpy(qt_hdr + off, lz, 64);
+                    /* Copy QT tables directly in natural order (GStreamer style) */
+                    simd_memcpy(qt_hdr + off, frame->qt_luma, 64);
                     off += 64;
-                    qt_hdr[off++] = 0x01;                 /* Tq=1 (chroma) */
-                    memcpy(qt_hdr + off, cz, 64);
+                    simd_memcpy(qt_hdr + off, frame->qt_chroma, 64);
                     off += 64;
                     
                     /* Verify QT header length */
@@ -610,13 +624,27 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
                     /* DEBUG: Log QT header info (once per frame) */
                     static int qt_pre_insert_log_count = 0;
                     if (qt_pre_insert_log_count++ < 1) {
-                        OPRINT("[RTP QT PRE-INSERT] Lq=%04x (BE), lz[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x, cz[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x\n",
-                               Lq, lz[0], lz[1], lz[2], lz[3], lz[4], lz[5], lz[6], lz[7],
-                               cz[0], cz[1], cz[2], cz[3], cz[4], cz[5], cz[6], cz[7]);
+                        OPRINT("[RTP QT PRE-INSERT] Lq=%04x (BE), luma[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x, chroma[0..7]=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+                               Lq, frame->qt_luma[0], frame->qt_luma[1], frame->qt_luma[2], frame->qt_luma[3],
+                               frame->qt_luma[4], frame->qt_luma[5], frame->qt_luma[6], frame->qt_luma[7],
+                               frame->qt_chroma[0], frame->qt_chroma[1], frame->qt_chroma[2], frame->qt_chroma[3],
+                               frame->qt_chroma[4], frame->qt_chroma[5], frame->qt_chroma[6], frame->qt_chroma[7]);
+                    }
+                    
+                    /* DIAGNOSTIC: Dump QT header separately */
+                    static int qt_hdr_dump_count = 0;
+                    if (qt_hdr_dump_count++ < 3) {
+                        const char *qt_hdr_dump_file = "/Users/350d/Library/Mobile Documents/com~apple~CloudDocs/GIT/mjpg-streamer/tmp/rtsp_diagnostics/qt_header.bin";
+                        FILE *qt_hdr_file = fopen(qt_hdr_dump_file, "wb");
+                        if (qt_hdr_file) {
+                            fwrite(qt_hdr, 1, qt_hdr_len, qt_hdr_file);
+                            fclose(qt_hdr_file);
+                            OPRINT("[RTP DIAG] Dumped QT header (%zu bytes) to %s\n", qt_hdr_len, qt_hdr_dump_file);
+                        }
                     }
                     
                     /* Insert QT header into packet */
-                    memcpy(packet + payload_offset, qt_hdr, qt_hdr_len);
+                    simd_memcpy(packet + payload_offset, qt_hdr, qt_hdr_len);
                 }
             }
         }
@@ -699,14 +727,9 @@ static int send_rtp_packet(int rtp_socket, rtsp_client_t *client, const rtp_jpeg
 
         int sent = 0;
         if (is_tcp) {
+            /* Optimize: Use client index from caller instead of searching */
             static int tcp_nodelay_sockets_[MAX_CLIENTS] = {0};
-            int client_idx = -1;
-            pthread_mutex_lock(&clients_mutex);
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (clients[i].socket == client->socket) { client_idx = i; break; }
-            }
-            pthread_mutex_unlock(&clients_mutex);
-            if (client_idx >= 0 && !tcp_nodelay_sockets_[client_idx]) {
+            if (client_idx >= 0 && client_idx < MAX_CLIENTS && !tcp_nodelay_sockets_[client_idx]) {
                 int opt = 1; setsockopt(client->socket, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
                 tcp_nodelay_sockets_[client_idx] = 1;
             }
@@ -889,7 +912,8 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
             int i;
             pthread_mutex_lock(&clients_mutex);
             for (i = 0; i < MAX_CLIENTS; i++) {
-                if (!clients[i].active) {
+                /* Check if slot is free: both active must be 0 AND socket must be 0 or -1 */
+                if (!clients[i].active && (clients[i].socket == 0 || clients[i].socket == -1)) {
                     clients[i].active = 1;
                     clients[i].socket = client_socket;
                     clients[i].rtp_port = 0; // TCP mode
@@ -922,7 +946,8 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
             int i;
             pthread_mutex_lock(&clients_mutex);
             for (i = 0; i < MAX_CLIENTS; i++) {
-                if (!clients[i].active) {
+                /* Check if slot is free: both active must be 0 AND socket must be 0 or -1 */
+                if (!clients[i].active && (clients[i].socket == 0 || clients[i].socket == -1)) {
                     clients[i].active = 1;
                     clients[i].socket = client_socket;
                     clients[i].rtp_port = client_rtp_port;
@@ -1007,8 +1032,16 @@ static void handle_rtsp_request(int client_socket, struct sockaddr_in client_add
         pthread_mutex_lock(&clients_mutex);
         for (i = 0; i < MAX_CLIENTS; i++) {
             if (clients[i].active && clients[i].socket == client_socket) {
+                /* Fully cleanup client on TEARDOWN */
                 clients[i].active = 0;
                 clients[i].playing = 0;
+                clients[i].socket = 0;
+                clients[i].rtp_port = 0;
+                clients[i].rtcp_port = 0;
+                clients[i].sequence_number = 0;
+                clients[i].timestamp = 0;
+                memset(&clients[i].addr, 0, sizeof(clients[i].addr));
+                OPRINT(" o: Client %d cleaned up on TEARDOWN (socket %d)\n", i, client_socket);
                 break;
             }
         }
@@ -1433,29 +1466,10 @@ void *stream_worker_thread(void *arg)
             continue;
         }
 
-        /* Send to all active clients - check playing state again after frame is copied */
+        /* Send to all active clients - optimized single pass through clients array */
         pthread_mutex_lock(&clients_mutex);
-        int clients_count = 0;
-        /* Re-count playing clients after frame is copied to ensure we have latest state */
-        playing_clients = 0;
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
-            int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-            if (clients[i].active && clients[i].playing && (is_tcp_client || is_udp_client)) {
-                playing_clients++;
-            }
-        }
-        uint32_t base_timestamp = 0;
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].active && clients[i].playing && clients[i].timestamp > 0) {
-                base_timestamp = clients[i].timestamp;
-                break;
-            }
-        }
-        if (base_timestamp == 0 && rtp_ts_increment > 0) {
-            base_timestamp = rtp_ts_increment;
-        }
-
+        
+        /* Cache SDP dimensions if needed */
         if (prepared_frame.width > 0 && prepared_frame.height > 0) {
             if (!sdp_dimensions_cached ||
                 (prepared_frame.width != cached_sdp_width || prepared_frame.height != cached_sdp_height)) {
@@ -1464,14 +1478,42 @@ void *stream_worker_thread(void *arg)
                 sdp_dimensions_cached = 1;
             }
         }
-
+        
+        /* Single optimized pass: count, find base_timestamp, send packets, update timestamps */
+        int clients_count = 0;
+        playing_clients = 0;
+        uint32_t base_timestamp = 0;
+        
+        /* First pass: count playing clients and find base_timestamp */
         for (int i = 0; i < MAX_CLIENTS; i++) {
-            /* Check if client is active, playing and properly initialized */
-            /* For TCP: socket > 0 and rtp_port == 0 */
-            /* For UDP: socket > 0, addr != 0, and rtp_port > 0 */
+            if (!clients[i].active || !clients[i].playing) continue;
+            
             int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
             int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-            if (clients[i].active && clients[i].playing && (is_tcp_client || is_udp_client) && prepared_frame.rtp_payload != NULL && prepared_frame.rtp_payload_size > 0) {
+            
+            if (is_tcp_client || is_udp_client) {
+                playing_clients++;
+                if (base_timestamp == 0 && clients[i].timestamp > 0) {
+                    base_timestamp = clients[i].timestamp;
+                }
+            }
+        }
+        
+        if (base_timestamp == 0 && rtp_ts_increment > 0) {
+            base_timestamp = rtp_ts_increment;
+        }
+        
+        /* Second pass: send packets to all playing clients */
+        if (prepared_frame.rtp_payload != NULL && prepared_frame.rtp_payload_size > 0) {
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (!clients[i].active || !clients[i].playing) continue;
+                
+                int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
+                int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
+                
+                if (!(is_tcp_client || is_udp_client)) continue;
+                
+                /* Initialize timestamp if needed */
                 if (clients[i].timestamp == 0) {
                     if (base_timestamp > 0) {
                         clients[i].timestamp = base_timestamp;
@@ -1479,28 +1521,37 @@ void *stream_worker_thread(void *arg)
                         clients[i].timestamp = rtp_ts_increment;
                     }
                 }
-                clients_count++;
-                int send_result = send_rtp_packet(rtp_socket, &clients[i], &prepared_frame, clients[i].timestamp);
+                
+                /* Send RTP packet - pass client index for optimization */
+                int send_result = send_rtp_packet(rtp_socket, &clients[i], &prepared_frame, clients[i].timestamp, i);
                 if (send_result < 0) {
                     OPRINT("[RTP ERROR] Failed to send RTP packet to client %d (socket %d, active=%d, playing=%d)\n", 
                            i, clients[i].socket, clients[i].active, clients[i].playing);
                     /* Mark client as inactive if send fails - socket may be closed */
                     if (errno == EPIPE || errno == ECONNRESET || errno == EBADF) {
+                        /* Fully cleanup client on send error */
+                        int old_socket = clients[i].socket; /* Save socket before cleanup */
                         clients[i].active = 0;
                         clients[i].playing = 0;
+                        clients[i].socket = 0;
+                        clients[i].rtp_port = 0;
+                        clients[i].rtcp_port = 0;
+                        clients[i].sequence_number = 0;
+                        clients[i].timestamp = 0;
+                        memset(&clients[i].addr, 0, sizeof(clients[i].addr));
+                        OPRINT(" o: Client %d cleaned up on send error (socket %d)\n", i, old_socket);
+                        continue; /* Skip timestamp update for disconnected client */
                     }
                 }
-            }
-        }
-        if (clients_count > 0) {
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                int is_tcp_client = (clients[i].socket > 0 && clients[i].rtp_port == 0);
-                int is_udp_client = (clients[i].socket > 0 && clients[i].rtp_port > 0 && clients[i].addr.sin_addr.s_addr != 0);
-                if (clients[i].active && clients[i].playing && (is_tcp_client || is_udp_client)) {
+                
+                /* Update timestamp for successfully sent packet */
+                if (send_result >= 0) {
                     clients[i].timestamp += rtp_ts_increment;
+                    clients_count++;
                 }
             }
         }
+        
         pthread_mutex_unlock(&clients_mutex);
 
         free_rtp_jpeg_frame(&prepared_frame);
