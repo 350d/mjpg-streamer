@@ -225,7 +225,7 @@ int remove_client_socket(async_io_context *ctx, int sockfd) {
 #endif
 
 /* Stage 3: HTTP header caching functions */
-int init_header_cache(header_cache *cache) {
+int init_header_cache(header_cache *cache, char enable_timestamp) {
     if (cache->initialized) {
         return 0; /* Already initialized */
     }
@@ -234,25 +234,41 @@ int init_header_cache(header_cache *cache) {
     cache->snapshot_200.data = malloc(512);
     if (!cache->snapshot_200.data) return -1;
     
-    snprintf(cache->snapshot_200.data, 512,
-        "HTTP/1.0 200 OK\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Connection: close\r\n"
-        "Server: MJPG-Streamer/0.2\r\n"
-        "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
-        "Pragma: no-cache\r\n"
-        "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
-        "Content-type: image/jpeg\r\n"
-        "X-Timestamp: 0000000000.000000\r\n"
-        "\r\n");
-    
-    cache->snapshot_200.len = strlen(cache->snapshot_200.data);
-    /* Find the position of timestamp in the template */
-    char *timestamp_start = strstr(cache->snapshot_200.data, "X-Timestamp: ");
-    if (timestamp_start) {
-        cache->snapshot_200.timestamp_pos = timestamp_start - cache->snapshot_200.data + 13; /* After "X-Timestamp: " */
+    if (enable_timestamp) {
+        snprintf(cache->snapshot_200.data, 512,
+            "HTTP/1.0 200 OK\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Connection: close\r\n"
+            "Server: MJPG-Streamer/0.2\r\n"
+            "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
+            "Pragma: no-cache\r\n"
+            "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+            "Content-type: image/jpeg\r\n"
+            "X-Timestamp: 0000000000.000000\r\n"
+            "\r\n");
+        
+        cache->snapshot_200.len = strlen(cache->snapshot_200.data);
+        /* Find the position of timestamp in the template */
+        char *timestamp_start = strstr(cache->snapshot_200.data, "X-Timestamp: ");
+        if (timestamp_start) {
+            cache->snapshot_200.timestamp_pos = timestamp_start - cache->snapshot_200.data + 13; /* After "X-Timestamp: " */
+        } else {
+            cache->snapshot_200.timestamp_pos = -1; /* Not found */
+        }
     } else {
-        cache->snapshot_200.timestamp_pos = -1; /* Not found */
+        snprintf(cache->snapshot_200.data, 512,
+            "HTTP/1.0 200 OK\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Connection: close\r\n"
+            "Server: MJPG-Streamer/0.2\r\n"
+            "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
+            "Pragma: no-cache\r\n"
+            "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+            "Content-type: image/jpeg\r\n"
+            "\r\n");
+        
+        cache->snapshot_200.len = strlen(cache->snapshot_200.data);
+        cache->snapshot_200.timestamp_pos = -1;
     }
     cache->snapshot_200.content_length_pos = -1;
     
@@ -315,8 +331,8 @@ void cleanup_header_cache(header_cache *cache) {
 }
 
 /* Fast header generation using cache */
-static int write_cached_header(int fd, cached_header *header, struct timeval *timestamp) {
-    if (header->timestamp_pos != -1 && timestamp) {
+static int write_cached_header(int fd, cached_header *header, struct timeval *timestamp, char enable_timestamp) {
+    if (header->timestamp_pos != -1 && timestamp && enable_timestamp) {
         /* Create a copy of the header and update timestamp */
         char *header_copy = malloc(header->len + 1);
         if (!header_copy) return -1;
@@ -807,7 +823,7 @@ void send_snapshot(cfd *context_fd, int input_number)
     #endif
 
     /* write the response using cached header for better performance */
-    if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp) < 0) {
+    if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp, server_context->conf.enable_timestamp) < 0) {
         if (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE) {
             if (frame != server_context->static_frame_buffer) free(frame);
             if (buffer != (char*)server_context->static_header_buffer) free(buffer);
@@ -848,7 +864,7 @@ void send_stream(cfd *context_fd, int input_number)
     DBG("preparing header\n");
     /* Use cached stream header for better performance */
     context *server_context = context_fd->pc;
-    if (write_cached_header(context_fd->fd, &server_context->headers.stream_200, NULL) < 0) {
+    if (write_cached_header(context_fd->fd, &server_context->headers.stream_200, NULL, server_context->conf.enable_timestamp) < 0) {
         free(frame);
         return;
     }
@@ -902,10 +918,16 @@ void send_stream(cfd *context_fd, int input_number)
          * sending the content-length fixes random stream disruption observed
          * with firefox
          */
-        sprintf(buffer, "Content-Type: image/jpeg\r\n" \
-                "Content-Length: %d\r\n" \
-                "X-Timestamp: %d.%06d\r\n" \
-                "\r\n", frame_size, (int)timestamp.tv_sec, (int)timestamp.tv_usec);
+        if (server_context->conf.enable_timestamp) {
+            sprintf(buffer, "Content-Type: image/jpeg\r\n" \
+                    "Content-Length: %d\r\n" \
+                    "X-Timestamp: %d.%06d\r\n" \
+                    "\r\n", frame_size, (int)timestamp.tv_sec, (int)timestamp.tv_usec);
+        } else {
+            sprintf(buffer, "Content-Type: image/jpeg\r\n" \
+                    "Content-Length: %d\r\n" \
+                    "\r\n", frame_size);
+        }
         DBG("sending intemdiate header\n");
         if(write(context_fd->fd, buffer, strlen(buffer)) < 0) break;
 

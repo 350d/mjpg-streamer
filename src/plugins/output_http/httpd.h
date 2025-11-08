@@ -173,6 +173,7 @@ typedef struct {
     char *credentials;
     char *www_folder;
     char nocommands;
+    char enable_timestamp;
 } config;
 
 /* Write buffer for I/O optimization */
