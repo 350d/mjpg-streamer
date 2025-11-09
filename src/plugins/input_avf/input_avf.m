@@ -154,13 +154,11 @@ static int plugin_id;
         pglobal->in[plugin_id].current_size = jpeg_size;
         pglobal->in[plugin_id].prev_size = pglobal->in[plugin_id].current_size;
 
-        // Update timestamp - optimized like UVC plugin
-        if (self.context->useTimestamp) {
-            gettimeofday(&pglobal->in[plugin_id].timestamp, NULL);
-            pglobal->in[plugin_id].frame_timestamp_ms = 
-                pglobal->in[plugin_id].timestamp.tv_sec * 1000 + 
-                pglobal->in[plugin_id].timestamp.tv_usec / 1000;
-        }
+        // Update timestamp - always use Unix timestamp (system time)
+        gettimeofday(&pglobal->in[plugin_id].timestamp, NULL);
+        pglobal->in[plugin_id].frame_timestamp_ms = 
+            pglobal->in[plugin_id].timestamp.tv_sec * 1000 + 
+            pglobal->in[plugin_id].timestamp.tv_usec / 1000;
 
         // Increment frame sequence
         pglobal->in[plugin_id].frame_sequence++;
