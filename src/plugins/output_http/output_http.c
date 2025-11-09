@@ -78,7 +78,6 @@ void help(void)
             " [-p | --port ]..........: TCP port for this HTTP server\n" \
 	        " [-l ] --listen ]........: Listen on Hostname / IP\n" \
             " [-c | --credentials ]...: ask for \"username:password\" on connect\n" \
-            " [-n | --nocommands ]....: disable execution of commands\n" \
             " [-i | --input ]........: input plugin number (default: 0)\n"
             " ---------------------------------------------------------------\n");
 }
@@ -98,14 +97,12 @@ int output_init(output_parameter *param, int id)
     int i;
     int  port;
     char *credentials, *www_folder, *hostname = NULL;
-    char nocommands;
 
     DBG("output #%02d\n", param->id);
 
     port = htons(8080);
     credentials = NULL;
     www_folder = NULL;
-    nocommands = 0;
 
     param->argv[0] = OUTPUT_PLUGIN_NAME;
     
@@ -130,8 +127,6 @@ int output_init(output_parameter *param, int id)
             {"credentials", required_argument, 0, 0},
             {"w", required_argument, 0, 0},
             {"www", required_argument, 0, 0},
-            {"n", no_argument, 0, 0},
-            {"nocommands", no_argument, 0, 0},
             {"i", required_argument, 0, 0},
             {"input", required_argument, 0, 0},
             {0, 0, 0, 0}
@@ -188,15 +183,9 @@ int output_init(output_parameter *param, int id)
                 strcat(www_folder, "/");
             break;
 
-            /* n, nocommands */
+            /* i, input */
         case 10:
         case 11:
-            DBG("case 10,11\n");
-            nocommands = 1;
-            break;
-            /* i, input */
-        case 12:
-        case 13:
             DBG("case 12,13\n");
             input_number = atoi(optarg);
             break;
@@ -209,7 +198,6 @@ int output_init(output_parameter *param, int id)
     servers[param->id].conf.hostname = hostname;
     servers[param->id].conf.credentials = credentials;
     servers[param->id].conf.www_folder = www_folder;
-    servers[param->id].conf.nocommands = nocommands;
     
     /* Initialize static buffers for performance optimization */
     servers[param->id].use_static_buffers = 1;
@@ -238,7 +226,6 @@ int output_init(output_parameter *param, int id)
     OPRINT("HTTP TCP port........: %d\n", ntohs(port));
     OPRINT("HTTP Listen Address..: %s\n", hostname);
     OPRINT("username:password....: %s\n", (credentials == NULL) ? "disabled" : credentials);
-    OPRINT("commands.............: %s\n", (nocommands) ? "disabled" : "enabled");
 
     param->global->out[id].name = malloc((strlen(OUTPUT_PLUGIN_NAME) + 1) * sizeof(char));
     sprintf(param->global->out[id].name, OUTPUT_PLUGIN_NAME);

@@ -19,7 +19,6 @@ High-performance HTTP streaming server with **advanced network optimizations** a
 | `--port` | `-p` | TCP port | 8080 |
 | `--listen` | `-l` | Listen on hostname/IP | 0.0.0.0 |
 | `--credentials` | `-c` | Username:password authentication | - |
-| `--nocommands` | `-n` | Disable command execution | false |
 
 ## 🎮 Usage Examples
 
@@ -68,10 +67,6 @@ http://127.0.0.1:8080/stream2
 http://127.0.0.1:8080/snapshot
 http://127.0.0.1:8080/snapshot0
 http://127.0.0.1:8080/snapshot1
-
-# Commands with parameters
-http://127.0.0.1:8080/command?param=value
-http://127.0.0.1:8080/command1?param=value
 
 # Take snapshot with filename
 http://127.0.0.1:8080/take?filename=test.jpg
@@ -189,11 +184,6 @@ if (buffer_pos >= WRITE_BUFFER_SIZE) {
 ./mjpg_streamer -o "./plugins/output_http.so -c username:password"
 ```
 
-### Command Execution
-```bash
-# Disable command execution for security
-./mjpg_streamer -o "./plugins/output_http.so -n"
-```
 
 ### Connection Limits
 - **Maximum clients**: 50 concurrent connections
@@ -267,20 +257,6 @@ valgrind --leak-check=full ./mjpg_streamer
 - **Network I/O**: Bytes sent/received
 - **Error rates**: Failed connections
 
-## 🔧 WebcamXP Compatibility
-
-For WebcamXP compatibility, compile with WXP_COMPAT flag:
-
-```bash
-# Enable WebcamXP compatibility
-mkdir build && cd build
-cmake -DWXP_COMPAT=ON ..
-make
-
-# Streams available as:
-# http://127.0.0.1:8080/cam_1.mjpg
-# http://127.0.0.1:8080/cam_1.jpg
-```
 
 ## 📄 License
 
