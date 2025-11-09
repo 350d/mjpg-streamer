@@ -86,6 +86,9 @@ typedef struct {
     char *data;
     size_t len;
     int timestamp_pos;  /* Position for timestamp insertion (-1 if no timestamp) */
+    int timestamp_len;  /* Length of timestamp placeholder */
+    int framerate_pos;  /* Position for framerate insertion (-1 if no framerate) */
+    int framerate_len;  /* Length of framerate placeholder */
     int content_length_pos;  /* Position for content-length insertion (-1 if no content-length) */
 } cached_header;
 
@@ -173,7 +176,6 @@ typedef struct {
     char *credentials;
     char *www_folder;
     char nocommands;
-    char enable_timestamp;
 } config;
 
 /* Write buffer for I/O optimization */

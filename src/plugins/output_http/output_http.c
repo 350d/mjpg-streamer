@@ -54,8 +54,6 @@ static int input_number = 0;
 /* Forward declarations for Stage 3 functions */
 int init_async_io(async_io_context *ctx, int max_events);
 void cleanup_async_io(async_io_context *ctx);
-int init_header_cache(header_cache *cache, char enable_timestamp);
-void cleanup_header_cache(header_cache *cache);
 
 #define OUTPUT_PLUGIN_NAME "HTTP output plugin"
 
@@ -81,8 +79,7 @@ void help(void)
 	        " [-l ] --listen ]........: Listen on Hostname / IP\n" \
             " [-c | --credentials ]...: ask for \"username:password\" on connect\n" \
             " [-n | --nocommands ]....: disable execution of commands\n" \
-            " [-i | --input ]........: input plugin number (default: 0)\n" \
-            " [-t | --timestamp ]....: enable X-Timestamp header in HTTP responses\n"
+            " [-i | --input ]........: input plugin number (default: 0)\n"
             " ---------------------------------------------------------------\n");
 }
 
@@ -102,7 +99,6 @@ int output_init(output_parameter *param, int id)
     int  port;
     char *credentials, *www_folder, *hostname = NULL;
     char nocommands;
-    char enable_timestamp = 0;
 
     DBG("output #%02d\n", param->id);
 
@@ -138,8 +134,6 @@ int output_init(output_parameter *param, int id)
             {"nocommands", no_argument, 0, 0},
             {"i", required_argument, 0, 0},
             {"input", required_argument, 0, 0},
-            {"t", no_argument, 0, 0},
-            {"timestamp", no_argument, 0, 0},
             {0, 0, 0, 0}
         };
 
@@ -206,12 +200,6 @@ int output_init(output_parameter *param, int id)
             DBG("case 12,13\n");
             input_number = atoi(optarg);
             break;
-            /* t, timestamp */
-        case 14:
-        case 15:
-            DBG("case 14,15\n");
-            enable_timestamp = 1;
-            break;
         }
     }
 
@@ -222,7 +210,6 @@ int output_init(output_parameter *param, int id)
     servers[param->id].conf.credentials = credentials;
     servers[param->id].conf.www_folder = www_folder;
     servers[param->id].conf.nocommands = nocommands;
-    servers[param->id].conf.enable_timestamp = enable_timestamp;
     
     /* Initialize static buffers for performance optimization */
     servers[param->id].use_static_buffers = 1;
@@ -247,18 +234,11 @@ int output_init(output_parameter *param, int id)
         OPRINT("Failed to initialize async I/O\n");
         return -1;
     }
-    
-    if (init_header_cache(&servers[param->id].headers, enable_timestamp) != 0) {
-        OPRINT("Failed to initialize header cache\n");
-        cleanup_async_io(&servers[param->id].async_io);
-        return -1;
-    }
     OPRINT("www-folder-path......: %s\n", (www_folder == NULL) ? "disabled" : www_folder);
     OPRINT("HTTP TCP port........: %d\n", ntohs(port));
     OPRINT("HTTP Listen Address..: %s\n", hostname);
     OPRINT("username:password....: %s\n", (credentials == NULL) ? "disabled" : credentials);
     OPRINT("commands.............: %s\n", (nocommands) ? "disabled" : "enabled");
-    OPRINT("timestamp headers....: %s\n", (enable_timestamp) ? "enabled" : "disabled");
 
     param->global->out[id].name = malloc((strlen(OUTPUT_PLUGIN_NAME) + 1) * sizeof(char));
     sprintf(param->global->out[id].name, OUTPUT_PLUGIN_NAME);
@@ -283,7 +263,6 @@ int output_stop(int id)
     
     /* Clean up Stage 3 optimizations */
     cleanup_async_io(&servers[id].async_io);
-    cleanup_header_cache(&servers[id].headers);
     
 
     return 0;

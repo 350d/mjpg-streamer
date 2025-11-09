@@ -224,140 +224,6 @@ int remove_client_socket(async_io_context *ctx, int sockfd) {
 }
 #endif
 
-/* Stage 3: HTTP header caching functions */
-int init_header_cache(header_cache *cache, char enable_timestamp) {
-    if (cache->initialized) {
-        return 0; /* Already initialized */
-    }
-    
-    /* Initialize snapshot header */
-    cache->snapshot_200.data = malloc(512);
-    if (!cache->snapshot_200.data) return -1;
-    
-    if (enable_timestamp) {
-        snprintf(cache->snapshot_200.data, 512,
-            "HTTP/1.0 200 OK\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Connection: close\r\n"
-            "Server: MJPG-Streamer/0.2\r\n"
-            "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
-            "Pragma: no-cache\r\n"
-            "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
-            "Content-type: image/jpeg\r\n"
-            "X-Timestamp: 0000000000.000000\r\n"
-            "\r\n");
-        
-        cache->snapshot_200.len = strlen(cache->snapshot_200.data);
-        /* Find the position of timestamp in the template */
-        char *timestamp_start = strstr(cache->snapshot_200.data, "X-Timestamp: ");
-        if (timestamp_start) {
-            cache->snapshot_200.timestamp_pos = timestamp_start - cache->snapshot_200.data + 13; /* After "X-Timestamp: " */
-        } else {
-            cache->snapshot_200.timestamp_pos = -1; /* Not found */
-        }
-    } else {
-        snprintf(cache->snapshot_200.data, 512,
-            "HTTP/1.0 200 OK\r\n"
-            "Access-Control-Allow-Origin: *\r\n"
-            "Connection: close\r\n"
-            "Server: MJPG-Streamer/0.2\r\n"
-            "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
-            "Pragma: no-cache\r\n"
-            "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
-            "Content-type: image/jpeg\r\n"
-            "\r\n");
-        
-        cache->snapshot_200.len = strlen(cache->snapshot_200.data);
-        cache->snapshot_200.timestamp_pos = -1;
-    }
-    cache->snapshot_200.content_length_pos = -1;
-    
-    /* Initialize stream header */
-    cache->stream_200.data = malloc(512);
-    if (!cache->stream_200.data) return -1;
-    
-    snprintf(cache->stream_200.data, 512,
-        "HTTP/1.0 200 OK\r\n"
-        "Access-Control-Allow-Origin: *\r\n"
-        "Connection: keep-alive\r\n"
-        "Keep-Alive: timeout=5, max=100\r\n"
-        "Server: MJPG-Streamer/0.2\r\n"
-        "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
-        "Pragma: no-cache\r\n"
-        "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
-        "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n"
-        "\r\n"
-        "--" BOUNDARY "\r\n");
-    
-    cache->stream_200.len = strlen(cache->stream_200.data);
-    cache->stream_200.timestamp_pos = -1;
-    cache->stream_200.content_length_pos = -1;
-    
-    /* Initialize error headers */
-    cache->error_400.data = "HTTP/1.0 400 Bad Request\r\nContent-type: text/plain\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
-    cache->error_400.len = strlen(cache->error_400.data);
-    cache->error_400.timestamp_pos = -1;
-    cache->error_400.content_length_pos = -1;
-    
-    cache->error_404.data = "HTTP/1.0 404 Not Found\r\nContent-type: text/plain\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
-    cache->error_404.len = strlen(cache->error_404.data);
-    cache->error_404.timestamp_pos = -1;
-    cache->error_404.content_length_pos = -1;
-    
-    cache->error_500.data = "HTTP/1.0 500 Internal Server Error\r\nContent-type: text/plain\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
-    cache->error_500.len = strlen(cache->error_500.data);
-    cache->error_500.timestamp_pos = -1;
-    cache->error_500.content_length_pos = -1;
-    
-    cache->json_200.data = "HTTP/1.0 200 OK\r\nContent-type: application/json\r\nConnection: close\r\nServer: MJPG-Streamer/0.2\r\n\r\n";
-    cache->json_200.len = strlen(cache->json_200.data);
-    cache->json_200.timestamp_pos = -1;
-    cache->json_200.content_length_pos = -1;
-    
-    cache->initialized = 1;
-    return 0;
-}
-
-void cleanup_header_cache(header_cache *cache) {
-    if (cache->snapshot_200.data) {
-        free(cache->snapshot_200.data);
-        cache->snapshot_200.data = NULL;
-    }
-    if (cache->stream_200.data) {
-        free(cache->stream_200.data);
-        cache->stream_200.data = NULL;
-    }
-    cache->initialized = 0;
-}
-
-/* Fast header generation using cache */
-static int write_cached_header(int fd, cached_header *header, struct timeval *timestamp, char enable_timestamp) {
-    if (header->timestamp_pos != -1 && timestamp && enable_timestamp) {
-        /* Create a copy of the header and update timestamp */
-        char *header_copy = malloc(header->len + 1);
-        if (!header_copy) return -1;
-        
-        memcpy(header_copy, header->data, header->len);
-        header_copy[header->len] = '\0';
-        
-        /* Update timestamp in the copy */
-        char timestamp_str[32];
-        snprintf(timestamp_str, sizeof(timestamp_str), "%d.%06d", 
-                (int)timestamp->tv_sec, (int)timestamp->tv_usec);
-        
-        /* Replace the placeholder timestamp */
-        memcpy(header_copy + header->timestamp_pos, timestamp_str, strlen(timestamp_str));
-        
-        /* Write the complete header */
-        int result = write(fd, header_copy, header->len);
-        free(header_copy);
-        return (result < 0) ? -1 : 0;
-    } else {
-        /* Write header as-is */
-        if (write(fd, header->data, header->len) < 0) return -1;
-    }
-    return 0;
-}
 
 static globals *pglobal;
 extern context servers[MAX_OUTPUT_PLUGINS];
@@ -822,8 +688,22 @@ void send_snapshot(cfd *context_fd, int input_number)
     update_client_timestamp(context_fd->client);
     #endif
 
-    /* write the response using cached header for better performance */
-    if (write_cached_header(context_fd->fd, &server_context->headers.snapshot_200, &timestamp, server_context->conf.enable_timestamp) < 0) {
+    /* write the response header with dynamic values */
+    char header_buffer[512];
+    int header_len = snprintf(header_buffer, sizeof(header_buffer),
+        "HTTP/1.0 200 OK\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n"
+        "Server: MJPG-Streamer/0.2\r\n"
+        "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
+        "Pragma: no-cache\r\n"
+        "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+        "Content-type: image/jpeg\r\n"
+        "X-Timestamp: %d.%06d\r\n"
+        "X-Framerate: 0\r\n"
+        "\r\n",
+        (int)timestamp.tv_sec, (int)timestamp.tv_usec);
+    if (write(context_fd->fd, header_buffer, header_len) < 0) {
         if (!server_context->use_static_buffers || frame_size > MAX_FRAME_SIZE) {
             if (frame != server_context->static_frame_buffer) free(frame);
             if (buffer != (char*)server_context->static_header_buffer) free(buffer);
@@ -862,9 +742,30 @@ void send_stream(cfd *context_fd, int input_number)
     struct timeval timestamp;
 
     DBG("preparing header\n");
-    /* Use cached stream header for better performance */
-    context *server_context = context_fd->pc;
-    if (write_cached_header(context_fd->fd, &server_context->headers.stream_200, NULL, server_context->conf.enable_timestamp) < 0) {
+    /* Get initial timestamp and fps for stream header */
+    pthread_mutex_lock(&pglobal->in[input_number].db);
+    struct timeval initial_timestamp = pglobal->in[input_number].timestamp;
+    int initial_fps = pglobal->in[input_number].fps;
+    pthread_mutex_unlock(&pglobal->in[input_number].db);
+    
+    /* Write stream header with dynamic values */
+    char header_buffer[512];
+    int header_len = snprintf(header_buffer, sizeof(header_buffer),
+        "HTTP/1.0 200 OK\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Connection: keep-alive\r\n"
+        "Keep-Alive: timeout=5, max=100\r\n"
+        "Server: MJPG-Streamer/0.2\r\n"
+        "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n"
+        "Pragma: no-cache\r\n"
+        "Expires: Mon, 3 Jan 2000 12:34:56 GMT\r\n"
+        "Content-Type: multipart/x-mixed-replace;boundary=" BOUNDARY "\r\n"
+        "X-Timestamp: %d.%06d\r\n"
+        "X-Framerate: %d\r\n"
+        "\r\n"
+        "--" BOUNDARY "\r\n",
+        (int)initial_timestamp.tv_sec, (int)initial_timestamp.tv_usec, initial_fps);
+    if (write(context_fd->fd, header_buffer, header_len) < 0) {
         free(frame);
         return;
     }
@@ -918,16 +819,12 @@ void send_stream(cfd *context_fd, int input_number)
          * sending the content-length fixes random stream disruption observed
          * with firefox
          */
-        if (server_context->conf.enable_timestamp) {
-            sprintf(buffer, "Content-Type: image/jpeg\r\n" \
-                    "Content-Length: %d\r\n" \
-                    "X-Timestamp: %d.%06d\r\n" \
-                    "\r\n", frame_size, (int)timestamp.tv_sec, (int)timestamp.tv_usec);
-        } else {
-            sprintf(buffer, "Content-Type: image/jpeg\r\n" \
-                    "Content-Length: %d\r\n" \
-                    "\r\n", frame_size);
-        }
+        int fps = pglobal->in[input_number].fps;
+        sprintf(buffer, "Content-Type: image/jpeg\r\n" \
+                "Content-Length: %d\r\n" \
+                "X-Timestamp: %d.%06d\r\n" \
+                "X-Framerate: %d\r\n" \
+                "\r\n", frame_size, (int)timestamp.tv_sec, (int)timestamp.tv_usec, fps);
         DBG("sending intemdiate header\n");
         if(write(context_fd->fd, buffer, strlen(buffer)) < 0) break;
 
