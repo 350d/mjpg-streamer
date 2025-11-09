@@ -54,23 +54,47 @@ High-performance HTTP streaming server with **advanced network optimizations** a
 
 ## 🌐 Accessing Streams
 
+### Short Paths (Recommended)
+```bash
+# Main stream (input 0)
+http://127.0.0.1:8080/stream
+http://127.0.0.1:8080/stream0
+
+# Specific input streams
+http://127.0.0.1:8080/stream1
+http://127.0.0.1:8080/stream2
+
+# Single JPEG snapshot
+http://127.0.0.1:8080/snapshot
+http://127.0.0.1:8080/snapshot0
+http://127.0.0.1:8080/snapshot1
+
+# Commands with parameters
+http://127.0.0.1:8080/command?param=value
+http://127.0.0.1:8080/command1?param=value
+
+# Take snapshot with filename
+http://127.0.0.1:8080/take?filename=test.jpg
+http://127.0.0.1:8080/take1?filename=test.jpg
+```
+
 ### Browser/VLC
 ```bash
 # Main stream
-http://127.0.0.1:8080/?action=stream
+http://127.0.0.1:8080/stream
 
 # Specific input stream
-http://127.0.0.1:8080/?action=stream_0
-http://127.0.0.1:8080/?action=stream_1
+http://127.0.0.1:8080/stream0
+http://127.0.0.1:8080/stream1
 
 # Single JPEG snapshot
-http://127.0.0.1:8080/?action=snapshot
+http://127.0.0.1:8080/snapshot
 ```
 
 ### mplayer
 ```bash
 # Play HTTP M-JPEG stream
-mplayer -fps 30 -demuxer lavf "http://127.0.0.1:8080/?action=stream&ignored.mjpg"
+mplayer -fps 30 -demuxer lavf "http://127.0.0.1:8080/stream"
 
 # Configure mplayer for IPv4
 echo "prefer-ipv4=yes" >> ~/.mplayer/config
@@ -184,7 +208,7 @@ if (buffer_pos >= WRITE_BUFFER_SIZE) {
 netstat -tlnp | grep :8080
 
 # Test with curl
-curl -v http://127.0.0.1:8080/?action=stream
+curl -v http://127.0.0.1:8080/stream
 ```
 
 ### Performance Issues

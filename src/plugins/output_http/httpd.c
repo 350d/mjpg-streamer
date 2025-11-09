@@ -229,6 +229,85 @@ static globals *pglobal;
 extern context servers[MAX_OUTPUT_PLUGINS];
 int piggy_fine = 2; // FIXME make it command line parameter
 
+/* Forward declarations */
+int unescape(char *string);
+static char *build_menu_string(const unsigned char *menuitems[], int min, int max, int is_input);
+static void append_control_json(char *buffer, const char *name, int id, int type, int min, int max, 
+                                int step, int default_val, int value, int dest, int flags, int group, 
+                                const char *menu_string);
+static int parse_short_path(const char *buffer, const char *path_prefix, int *number);
+
+/* Helper function to check client status and set error if needed */
+static int check_and_handle_client_status(cfd *lcfd, request *req, int *query_suffixed)
+{
+#ifdef MANAGMENT
+    if (check_client_status(lcfd->client)) {
+        req->type = A_UNKNOWN;
+        lcfd->client->last_take_time.tv_sec += piggy_fine;
+        send_error(lcfd->fd, 403, "frame already sent");
+        *query_suffixed = 0;
+        return 1;
+    }
+#endif
+    return 0;
+}
+
+/* Helper function to parse parameter from buffer */
+static int parse_parameter(const char *buffer, const char *prefix, char **parameter, const char *allowed_chars)
+{
+    const char *pb = strstr(buffer, prefix);
+    if (pb == NULL) {
+        return -1;
+    }
+    pb += strlen(prefix);
+    int len = MIN(MAX(strspn(pb, allowed_chars), 0), 100);
+    *parameter = malloc(len + 1);
+    if (*parameter == NULL) {
+        return -1;
+    }
+    memset(*parameter, 0, len + 1);
+    strncpy(*parameter, pb, len);
+    if (unescape(*parameter) == -1) {
+        free(*parameter);
+        *parameter = NULL;
+        return -1;
+    }
+    return len;
+}
+
+/* Helper function to parse short path and extract action type and number */
+static int parse_short_path(const char *buffer, const char *path_prefix, int *number)
+{
+    char path_pattern[32];
+    // Try GET first
+    snprintf(path_pattern, sizeof(path_pattern), "GET /%s", path_prefix);
+    const char *pb = strstr(buffer, path_pattern);
+    if (pb == NULL) {
+        // Try POST for stream
+        snprintf(path_pattern, sizeof(path_pattern), "POST /%s", path_prefix);
+        pb = strstr(buffer, path_pattern);
+        if (pb == NULL) {
+            return 0; // Not found
+        }
+    }
+    pb += strlen(path_pattern);
+    
+    // Check if there's a number after the path
+    if (*pb >= '0' && *pb <= '9') {
+        *number = atoi(pb);
+        // Skip digits
+        while (*pb >= '0' && *pb <= '9') pb++;
+        // Check if there's a query string or end
+        if (*pb == ' ' || *pb == '?' || *pb == '\r' || *pb == '\n' || *pb == '\0') {
+            return 1; // Found with number
+        }
+    } else if (*pb == ' ' || *pb == '?' || *pb == '\r' || *pb == '\n' || *pb == '\0') {
+        *number = 0; // Default to 0 if no number specified
+        return 1; // Found without number
+    }
+    return 0; // Not a valid path
+}
+
 /******************************************************************************
 Description.: initializes the iobuffer structure properly
 Input Value.: pointer to already allocated iobuffer
@@ -439,41 +518,28 @@ Return Value: 0 if everything is ok, -1 in case of error
 ******************************************************************************/
 int unescape(char *string)
 {
-    char *source = string, *destination = string;
-    int src, dst, length = strlen(string), rc;
+    char *dst = string;
+    int length = strlen(string);
+    int rc;
 
-    /* iterate over the string */
-    for(dst = 0, src = 0; src < length; src++) {
-
-        /* is it an escape character? */
-        if(source[src] != '%') {
-            /* no, so just go to the next character */
-            destination[dst] = source[src];
-            dst++;
+    for(int src = 0; src < length; src++) {
+        if(string[src] != '%') {
+            *dst++ = string[src];
             continue;
         }
 
-        /* yes, it is an escaped character */
-
-        /* check if there are enough characters */
-        if(src + 2 > length) {
+        if(src + 2 >= length) {
             return -1;
-            break;
         }
 
-        /* perform replacement of %## with the corresponding character */
-        if((rc = hex_char_to_int(source[src+1])) == -1) return -1;
-        destination[dst] = rc * 16;
-        if((rc = hex_char_to_int(source[src+2])) == -1) return -1;
-        destination[dst] += rc;
-
-        /* advance pointers, here is the reason why the resulting string is shorter */
-        dst++; src += 2;
+        if((rc = hex_char_to_int(string[src+1])) == -1) return -1;
+        *dst = rc * 16;
+        if((rc = hex_char_to_int(string[src+2])) == -1) return -1;
+        *dst++ += rc;
+        src += 2;
     }
 
-    /* ensure the string is properly finished with a null-character */
-    destination[dst] = '\0';
-
+    *dst = '\0';
     return 0;
 }
 
@@ -1366,96 +1432,71 @@ void *client_thread(void *arg)
 
     req.query_string = NULL;
 
-    /* determine what to deliver */
-    if(strstr(buffer, "GET /?action=snapshot") != NULL) {
+    /* determine what to deliver - new short paths */
+    if(parse_short_path(buffer, "snapshot", &input_number)) {
         req.type = A_SNAPSHOT;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
-            req.type = A_UNKNOWN;
-            lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
-            query_suffixed = 0;
+        if (check_and_handle_client_status(&lcfd, &req, &query_suffixed)) {
+            close(lcfd.fd);
+            return NULL;
         }
-        #endif
+    } else if(parse_short_path(buffer, "stream", &input_number)) {
+        req.type = A_STREAM;
+        query_suffixed = 255;
+        if (check_and_handle_client_status(&lcfd, &req, &query_suffixed)) {
+            close(lcfd.fd);
+            return NULL;
+        }
     #ifdef WXP_COMPAT
     } else if((strstr(buffer, "GET /cam") != NULL) && (strstr(buffer, ".jpg") != NULL)) {
         req.type = A_SNAPSHOT_WXP;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
-            req.type = A_UNKNOWN;
-            lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
-            query_suffixed = 0;
+        if (check_and_handle_client_status(&lcfd, &req, &query_suffixed)) {
+            close(lcfd.fd);
+            return NULL;
         }
-        #endif
-    #endif
-    } else if(strstr(buffer, "POST /stream") != NULL) {
-        req.type = A_STREAM;
-        query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
-            req.type = A_UNKNOWN;
-            lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
-            query_suffixed = 0;
-        }
-        #endif
-    } else if(strstr(buffer, "GET /?action=stream") != NULL) {
-        req.type = A_STREAM;
-        query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
-            req.type = A_UNKNOWN;
-            lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
-            query_suffixed = 0;
-        }
-        #endif
-    #ifdef WXP_COMPAT
     } else if((strstr(buffer, "GET /cam") != NULL) && (strstr(buffer, ".mjpg") != NULL)) {
         req.type = A_STREAM_WXP;
         query_suffixed = 255;
-        #ifdef MANAGMENT
-        if (check_client_status(lcfd.client)) {
-            req.type = A_UNKNOWN;
-            lcfd.client->last_take_time.tv_sec += piggy_fine;
-            send_error(lcfd.fd, 403, "frame already sent");
-            query_suffixed = 0;
+        if (check_and_handle_client_status(&lcfd, &req, &query_suffixed)) {
+            close(lcfd.fd);
+            return NULL;
         }
-        #endif
     #endif
-    } else if(strstr(buffer, "GET /?action=take") != NULL) {
-        int len;
+    } else if(parse_short_path(buffer, "take", &input_number)) {
         req.type = A_TAKE;
         query_suffixed = 255;
-
-        /* advance by the length of known string */
-        if((pb = strstr(buffer, "GET /?action=take")) == NULL) {
-            DBG("HTTP request seems to be malformed\n");
-            send_error(lcfd.fd, 400, "Malformed HTTP request");
-            close(lcfd.fd);
-            query_suffixed = 0;
-            return NULL;
+        // Parse parameters after ? or end of path
+        const char *pb = strstr(buffer, "GET /take");
+        if (pb == NULL) {
+            pb = strstr(buffer, "POST /take");
         }
-        pb += strlen("GET /?action=take"); // a pb points to thestring after the first & after command
-
-        /* only accept certain characters */
-        len = MIN(MAX(strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-=&1234567890%./"), 0), 100);
-        req.parameter = malloc(len + 1);
-        if(req.parameter == NULL) {
-            exit(EXIT_FAILURE);
-        }
-        memset(req.parameter, 0, len + 1);
-        strncpy(req.parameter, pb, len);
-
-        if(unescape(req.parameter) == -1) {
-            free(req.parameter);
-            send_error(lcfd.fd, 500, "could not properly unescape command parameter string");
-            LOG("could not properly unescape command parameter string\n");
-            close(lcfd.fd);
-            return NULL;
+        if (pb != NULL) {
+            if (strncmp(pb, "GET", 3) == 0) {
+                pb += strlen("GET /take");
+            } else {
+                pb += strlen("POST /take");
+            }
+            // Skip number if present
+            while (*pb >= '0' && *pb <= '9') pb++;
+            if (*pb == '?') {
+                pb++; // Skip ?
+                int len = MIN(MAX(strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-=&1234567890%./"), 0), 100);
+                req.parameter = malloc(len + 1);
+                if (req.parameter == NULL) {
+                    send_error(lcfd.fd, 500, "could not allocate memory");
+                    close(lcfd.fd);
+                    return NULL;
+                }
+                memset(req.parameter, 0, len + 1);
+                strncpy(req.parameter, pb, len);
+                if (unescape(req.parameter) == -1) {
+                    free(req.parameter);
+                    send_error(lcfd.fd, 500, "could not properly parse parameter string");
+                    close(lcfd.fd);
+                    return NULL;
+                }
+            }
         }
     } else if((strstr(buffer, "GET /input") != NULL) && (strstr(buffer, ".json") != NULL)) {
         req.type = A_INPUT_JSON;
@@ -1469,41 +1510,43 @@ void *client_thread(void *arg)
     } else if(strstr(buffer, "GET /clients.json") != NULL) {
         req.type = A_CLIENTS_JSON;
     #endif
-    } else if(strstr(buffer, "GET /?action=command") != NULL) {
-        int len;
+    } else if(parse_short_path(buffer, "command", &input_number)) {
         req.type = A_COMMAND;
-
-        /* advance by the length of known string */
-        if((pb = strstr(buffer, "GET /?action=command")) == NULL) {
-            DBG("HTTP request seems to be malformed\n");
-            send_error(lcfd.fd, 400, "Malformed HTTP request");
-            close(lcfd.fd);
-            return NULL;
+        query_suffixed = 255;
+        // Parse parameters after ? or end of path
+        const char *pb = strstr(buffer, "GET /command");
+        if (pb == NULL) {
+            pb = strstr(buffer, "POST /command");
         }
-        pb += strlen("GET /?action=command"); // a pb points to thestring after the first & after command
-
-        /* only accept certain characters */
-        len = MIN(MAX(strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-=&1234567890%./"), 0), 100);
-
-        req.parameter = malloc(len + 1);
-        if(req.parameter == NULL) {
-            exit(EXIT_FAILURE);
+        if (pb != NULL) {
+            if (strncmp(pb, "GET", 3) == 0) {
+                pb += strlen("GET /command");
+            } else {
+                pb += strlen("POST /command");
+            }
+            // Skip number if present
+            while (*pb >= '0' && *pb <= '9') pb++;
+            if (*pb == '?') {
+                pb++; // Skip ?
+                int len = MIN(MAX(strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-=&1234567890%./"), 0), 100);
+                req.parameter = malloc(len + 1);
+                if (req.parameter == NULL) {
+                    send_error(lcfd.fd, 500, "could not allocate memory");
+                    close(lcfd.fd);
+                    return NULL;
+                }
+                memset(req.parameter, 0, len + 1);
+                strncpy(req.parameter, pb, len);
+                if (unescape(req.parameter) == -1) {
+                    free(req.parameter);
+                    send_error(lcfd.fd, 500, "could not properly parse command parameter string");
+                    close(lcfd.fd);
+                    return NULL;
+                }
+                DBG("command parameter (len: %d): \"%s\"\n", len, req.parameter);
+            }
         }
-        memset(req.parameter, 0, len + 1);
-        strncpy(req.parameter, pb, len);
-
-        if(unescape(req.parameter) == -1) {
-            free(req.parameter);
-            send_error(lcfd.fd, 500, "could not properly unescape command parameter string");
-            LOG("could not properly unescape command parameter string\n");
-            close(lcfd.fd);
-            return NULL;
-        }
-
-        DBG("command parameter (len: %d): \"%s\"\n", len, req.parameter);
     } else {
-        int len;
-
         DBG("try to serve a file\n");
         req.type = A_FILE;
 
@@ -1515,12 +1558,11 @@ void *client_thread(void *arg)
         }
 
         pb += strlen("GET /");
-        len = MIN(MAX(strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-1234567890"), 0), 100);
+        int len = MIN(MAX(strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-1234567890"), 0), 100);
         req.parameter = malloc(len + 1);
         if(req.parameter == NULL) {
             exit(EXIT_FAILURE);
         }
-
         memset(req.parameter, 0, len + 1);
         strncpy(req.parameter, pb, len);
 
@@ -1528,7 +1570,7 @@ void *client_thread(void *arg)
             req.type = A_CGI;
             pb = strchr(pb, '?');
             if (pb != NULL) {
-                pb++; // skip the ?
+                pb++;
                 len = strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-1234567890=&");
                 req.query_string = malloc(len + 1);
                 if (req.query_string == NULL)
@@ -1546,12 +1588,10 @@ void *client_thread(void *arg)
     }
 
     /*
-     * Since when we are working with multiple input plugins
-     * there are some url which could have a _[plugin number suffix]
-     * For compatibility reasons it could be left in that case the output will be
-     * generated from the 0. input plugin
+     * For short paths, input_number is already set by parse_short_path
+     * For compatibility with old format, check for _[plugin number suffix]
      */
-    if(query_suffixed) {
+    if(query_suffixed && input_number == 0) {
         char *sch = strchr(buffer, '_');
         if(sch != NULL) {  // there is an _ in the url so the input number should be present
             DBG("Suffix character: %s\n", sch + 1); // FIXME if more than 10 input plugin is added
@@ -2011,92 +2051,38 @@ void send_input_JSON(int fd, int input_number)
             "\"controls\": [\n");
     if(pglobal->in[input_number].in_parameters != NULL) {
         for(i = 0; i < pglobal->in[input_number].parametercount; i++) {
-
             char *menuString = NULL;
-            if(pglobal->in[input_number].in_parameters[i].ctrl.type == V4L2_CTRL_TYPE_MENU) {
-                if(pglobal->in[input_number].in_parameters[i].menuitems != NULL) {
-                    int j, k = 1;
-                    for(j = pglobal->in[input_number].in_parameters[i].ctrl.minimum; j <= pglobal->in[input_number].in_parameters[i].ctrl.maximum; j++) {
-                        char *tempName = NULL; // temporary storage for name sanity checking
-
-                        int prevSize = 0;
-                        int itemLength = strlen((char*)&pglobal->in[input_number].in_parameters[i].menuitems[j].name);
-                        tempName = (char*)calloc(itemLength + 1, sizeof(char));  // allocate space for the sanity checking
-                        if (tempName == NULL) {
-                            DBG("Realloc/calloc failed: %s\n", strerror(errno));
-                            return;
-                        }
-
-                        check_JSON_string((char*)&pglobal->in[input_number].in_parameters[i].menuitems[j].name, tempName); // sanity check the string after non printable characters
-
-                        itemLength += strlen("\"\": \"\"");
-
-                        if (menuString == NULL) {
-                            menuString = calloc(itemLength + 5, sizeof(char));
-                        } else {
-                            menuString = realloc(menuString, (strlen(menuString) + itemLength + 5) * (sizeof(char)));
-                        }
-
-                        if (menuString == NULL) {
-                            DBG("Realloc/calloc failed: %s\n", strerror(errno));
-                            return;
-                        }
-                        prevSize = strlen(menuString);
-
-                        if(j != pglobal->in[input_number].in_parameters[i].ctrl.maximum) {
-                            sprintf(menuString + prevSize, "\"%d\": \"%s\", ", j , tempName);
-                        } else {
-                            sprintf(menuString + prevSize, "\"%d\": \"%s\"", j , tempName);
-                        }
-                        k++;
-                        free(tempName);
-                    }
+            if(pglobal->in[input_number].in_parameters[i].ctrl.type == V4L2_CTRL_TYPE_MENU &&
+               pglobal->in[input_number].in_parameters[i].menuitems != NULL) {
+                menuString = build_menu_string(
+                    (const unsigned char**)pglobal->in[input_number].in_parameters[i].menuitems,
+                    pglobal->in[input_number].in_parameters[i].ctrl.minimum,
+                    pglobal->in[input_number].in_parameters[i].ctrl.maximum,
+                    1); // is_input = 1
+                if (menuString == NULL) {
+                    DBG("Failed to build menu string\n");
+                    return;
                 }
             }
 
-            sprintf(buffer + strlen(buffer),
-                    "{\n"
-                    "\"name\": \"%s\",\n"
-                    "\"id\": \"%d\",\n"
-                    "\"type\": \"%d\",\n"
-                    "\"min\": \"%d\",\n"
-                    "\"max\": \"%d\",\n"
-                    "\"step\": \"%d\",\n"
-                    "\"default\": \"%d\",\n"
-                    "\"value\": \"%d\",\n"
-                    "\"dest\": \"0\",\n"
-                    "\"flags\": \"%d\",\n"
-                    "\"group\": \"%d\"",
-                    pglobal->in[input_number].in_parameters[i].ctrl.name,
-                    pglobal->in[input_number].in_parameters[i].ctrl.id,
-                    pglobal->in[input_number].in_parameters[i].ctrl.type,
-                    pglobal->in[input_number].in_parameters[i].ctrl.minimum,
-                    pglobal->in[input_number].in_parameters[i].ctrl.maximum,
-                    pglobal->in[input_number].in_parameters[i].ctrl.step,
-                    pglobal->in[input_number].in_parameters[i].ctrl.default_value,
-                    pglobal->in[input_number].in_parameters[i].value,
-                    // 0 is the code of the input plugin
-                    pglobal->in[input_number].in_parameters[i].ctrl.flags,
-                    pglobal->in[input_number].in_parameters[i].group
-                   );
-
-            // append the menu object to the menu typecontrols
-            if(pglobal->in[input_number].in_parameters[i].ctrl.type == V4L2_CTRL_TYPE_MENU) {
-                sprintf(buffer + strlen(buffer),
-                        ",\n"
-                        "\"menu\": {%s}\n"
-                        "}",
-                        menuString);
-            } else {
-                sprintf(buffer + strlen(buffer),
-                        "\n"
-                        "}");
-            }
+            append_control_json(buffer,
+                (const char*)pglobal->in[input_number].in_parameters[i].ctrl.name,
+                pglobal->in[input_number].in_parameters[i].ctrl.id,
+                pglobal->in[input_number].in_parameters[i].ctrl.type,
+                pglobal->in[input_number].in_parameters[i].ctrl.minimum,
+                pglobal->in[input_number].in_parameters[i].ctrl.maximum,
+                pglobal->in[input_number].in_parameters[i].ctrl.step,
+                pglobal->in[input_number].in_parameters[i].ctrl.default_value,
+                pglobal->in[input_number].in_parameters[i].value,
+                0, // dest = 0 for input plugin
+                pglobal->in[input_number].in_parameters[i].ctrl.flags,
+                pglobal->in[input_number].in_parameters[i].group,
+                menuString);
 
             if(i != (pglobal->in[input_number].parametercount - 1)) {
                 sprintf(buffer + strlen(buffer), ",\n");
             }
-            free(menuString);
+            if (menuString) free(menuString);
         }
     } else {
         DBG("The input plugin has no paramters\n");
@@ -2301,6 +2287,71 @@ void check_JSON_string(char *source, char *destination)
     }
 }
 
+/* Helper function to build menu string for JSON */
+static char *build_menu_string(const unsigned char *menuitems[], int min, int max, int is_input)
+{
+    char *menuString = NULL;
+    for(int j = min; j <= max; j++) {
+        char *tempName = NULL;
+        int itemLength = strlen((char*)menuitems[j]);
+        
+        if (is_input) {
+            tempName = (char*)calloc(itemLength + 1, sizeof(char));
+            if (tempName == NULL) return NULL;
+            check_JSON_string((char*)menuitems[j], tempName);
+            itemLength = strlen(tempName);
+        }
+        
+        itemLength += strlen("\"\": \"\"");
+        if (menuString == NULL) {
+            menuString = calloc(itemLength + 5, sizeof(char));
+        } else {
+            menuString = realloc(menuString, (strlen(menuString) + itemLength + 5) * sizeof(char));
+        }
+        if (menuString == NULL) {
+            if (tempName) free(tempName);
+            return NULL;
+        }
+        
+        int prevSize = strlen(menuString);
+        const char *name = is_input ? tempName : (char*)menuitems[j];
+        if(j != max) {
+            sprintf(menuString + prevSize, "\"%d\": \"%s\", ", j, name);
+        } else {
+            sprintf(menuString + prevSize, "\"%d\": \"%s\"", j, name);
+        }
+        if (tempName) free(tempName);
+    }
+    return menuString;
+}
+
+/* Helper function to append control JSON */
+static void append_control_json(char *buffer, const char *name, int id, int type, int min, int max, 
+                                int step, int default_val, int value, int dest, int flags, int group, 
+                                const char *menu_string)
+{
+    sprintf(buffer + strlen(buffer),
+            "{\n"
+            "\"name\": \"%s\",\n"
+            "\"id\": \"%d\",\n"
+            "\"type\": \"%d\",\n"
+            "\"min\": \"%d\",\n"
+            "\"max\": \"%d\",\n"
+            "\"step\": \"%d\",\n"
+            "\"default\": \"%d\",\n"
+            "\"value\": \"%d\",\n"
+            "\"dest\": \"%d\",\n"
+            "\"flags\": \"%d\",\n"
+            "\"group\": \"%d\"",
+            name, id, type, min, max, step, default_val, value, dest, flags, group);
+    
+    if(type == V4L2_CTRL_TYPE_MENU && menu_string) {
+        sprintf(buffer + strlen(buffer), ",\n\"menu\": {%s}\n}", menu_string);
+    } else {
+        sprintf(buffer + strlen(buffer), "\n}");
+    }
+}
+
 /******************************************************************************
 Description.: Send a JSON file which is contains information about the output plugin's
               acceptable parameters
@@ -2323,76 +2374,38 @@ void send_output_JSON(int fd, int input_number)
             "\"controls\": [\n");
     if(pglobal->out[input_number].out_parameters != NULL) {
         for(i = 0; i < pglobal->out[input_number].parametercount; i++) {
-            char *menuString = calloc(0, 0);
-            if(pglobal->out[input_number].out_parameters[i].ctrl.type == V4L2_CTRL_TYPE_MENU) {
-                if(pglobal->out[input_number].out_parameters[i].menuitems != NULL) {
-                    int j, k = 1;
-                    for(j = pglobal->out[input_number].out_parameters[i].ctrl.minimum; j <= pglobal->out[input_number].out_parameters[i].ctrl.maximum; j++) {
-                        int prevSize = strlen(menuString);
-                        int itemLength = strlen((char*)&pglobal->out[input_number].out_parameters[i].menuitems[j].name)  + strlen("\"\": \"\"");
-                        if (menuString == NULL) {
-                            menuString = calloc(itemLength, sizeof(char));
-                        } else {
-                            menuString = realloc(menuString, (strlen(menuString) + itemLength) * (sizeof(char)));
-                        }
-
-                        if (menuString == NULL) {
-                            DBG("Realloc/calloc failed: %s\n", strerror(errno));
-                            return;
-                        }
-
-                        if(j != pglobal->out[input_number].out_parameters[i].ctrl.maximum) {
-                            sprintf(menuString + prevSize, "\"%d\": \"%s\", ", j , (char*)&pglobal->out[input_number].out_parameters[i].menuitems[j].name);
-                        } else {
-                            sprintf(menuString + prevSize, "\"%d\": \"%s\"", j , (char*)&pglobal->out[input_number].out_parameters[i].menuitems[j].name);
-                        }
-                        k++;
-                    }
+            char *menuString = NULL;
+            if(pglobal->out[input_number].out_parameters[i].ctrl.type == V4L2_CTRL_TYPE_MENU &&
+               pglobal->out[input_number].out_parameters[i].menuitems != NULL) {
+                menuString = build_menu_string(
+                    (const unsigned char**)pglobal->out[input_number].out_parameters[i].menuitems,
+                    pglobal->out[input_number].out_parameters[i].ctrl.minimum,
+                    pglobal->out[input_number].out_parameters[i].ctrl.maximum,
+                    0); // is_input = 0
+                if (menuString == NULL) {
+                    DBG("Failed to build menu string\n");
+                    return;
                 }
             }
 
-            sprintf(buffer + strlen(buffer),
-                    "{\n"
-                    "\"name\": \"%s\",\n"
-                    "\"id\": \"%d\",\n"
-                    "\"type\": \"%d\",\n"
-                    "\"min\": \"%d\",\n"
-                    "\"max\": \"%d\",\n"
-                    "\"step\": \"%d\",\n"
-                    "\"default\": \"%d\",\n"
-                    "\"value\": \"%d\",\n"
-                    "\"dest\": \"1\",\n"
-                    "\"flags\": \"%d\",\n"
-                    "\"group\": \"%d\"",
-                    pglobal->out[input_number].out_parameters[i].ctrl.name,
-                    pglobal->out[input_number].out_parameters[i].ctrl.id,
-                    pglobal->out[input_number].out_parameters[i].ctrl.type,
-                    pglobal->out[input_number].out_parameters[i].ctrl.minimum,
-                    pglobal->out[input_number].out_parameters[i].ctrl.maximum,
-                    pglobal->out[input_number].out_parameters[i].ctrl.step,
-                    pglobal->out[input_number].out_parameters[i].ctrl.default_value,
-                    pglobal->out[input_number].out_parameters[i].value,
-                    // 1 is the code of the output plugin
-                    pglobal->out[input_number].out_parameters[i].ctrl.flags,
-                    pglobal->out[input_number].out_parameters[i].group
-                   );
-
-            if(pglobal->out[input_number].out_parameters[i].ctrl.type == V4L2_CTRL_TYPE_MENU) {
-                sprintf(buffer + strlen(buffer),
-                        ",\n"
-                        "\"menu\": {%s}\n"
-                        "}",
-                        menuString);
-            } else {
-                sprintf(buffer + strlen(buffer),
-                        "\n"
-                        "}");
-            }
+            append_control_json(buffer,
+                (const char*)pglobal->out[input_number].out_parameters[i].ctrl.name,
+                pglobal->out[input_number].out_parameters[i].ctrl.id,
+                pglobal->out[input_number].out_parameters[i].ctrl.type,
+                pglobal->out[input_number].out_parameters[i].ctrl.minimum,
+                pglobal->out[input_number].out_parameters[i].ctrl.maximum,
+                pglobal->out[input_number].out_parameters[i].ctrl.step,
+                pglobal->out[input_number].out_parameters[i].ctrl.default_value,
+                pglobal->out[input_number].out_parameters[i].value,
+                1, // dest = 1 for output plugin
+                pglobal->out[input_number].out_parameters[i].ctrl.flags,
+                pglobal->out[input_number].out_parameters[i].group,
+                menuString);
 
             if(i != (pglobal->out[input_number].parametercount - 1)) {
                 sprintf(buffer + strlen(buffer), ",\n");
             }
-            free(menuString);
+            if (menuString) free(menuString);
         }
     } else {
         DBG("The output plugin %d has no paramters\n", input_number);

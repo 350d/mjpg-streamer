@@ -238,6 +238,45 @@ make -j1
 # Access: http://127.0.0.1:8554/snapshot (HTTP snapshot)
 ```
 
+## 🌐 HTTP API Endpoints
+
+### Short Paths (Recommended)
+```bash
+# Stream endpoints
+http://127.0.0.1:8080/stream      # Main stream (input 0)
+http://127.0.0.1:8080/stream0      # Input 0
+http://127.0.0.1:8080/stream1      # Input 1
+http://127.0.0.1:8080/stream2      # Input 2
+
+# Snapshot endpoints
+http://127.0.0.1:8080/snapshot     # Snapshot from input 0
+http://127.0.0.1:8080/snapshot0    # Snapshot from input 0
+http://127.0.0.1:8080/snapshot1    # Snapshot from input 1
+
+# Command endpoints
+http://127.0.0.1:8080/command?param=value
+http://127.0.0.1:8080/command1?param=value
+
+# Take snapshot with filename
+http://127.0.0.1:8080/take?filename=test.jpg
+http://127.0.0.1:8080/take1?filename=test.jpg
+```
+
+### JSON API Endpoints
+```bash
+# Input plugin information
+http://127.0.0.1:8080/input.json
+http://127.0.0.1:8080/input0.json
+http://127.0.0.1:8080/input1.json
+
+# Output plugin information
+http://127.0.0.1:8080/output.json
+http://127.0.0.1:8080/output0.json
+
+# Program information
+http://127.0.0.1:8080/program.json
+```
+
 ## 📊 Motion Detection Parameters
 
 ### Basic Parameters
