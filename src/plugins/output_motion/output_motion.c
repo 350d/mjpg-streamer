@@ -906,6 +906,9 @@ void *worker_thread(void *arg)
             }
             simd_memcpy(current_frame, frame_data, frame_size);
         }
+        
+        /* Use frame_data directly if save_folder is not specified */
+        unsigned char *frame_to_process = (save_folder != NULL) ? current_frame : frame_data;
 
         frame_counter++;
 
@@ -954,7 +957,7 @@ void *worker_thread(void *arg)
         // Universal decoder - handles JPEG, MJPEG, raw RGB, raw YUV
         unsigned char *gray_data = NULL;
         
-        if(decode_any_to_y_component(current_frame, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
+        if(decode_any_to_y_component(frame_to_process, frame_size, scale_factor, &gray_data, &width, &height, pglobal->in[input_number].width, pglobal->in[input_number].height, pglobal->in[input_number].format) < 0) {
             pthread_mutex_unlock(&pglobal->in[input_number].db);
             if (current_frame && save_folder == NULL) {
                 free(current_frame);
