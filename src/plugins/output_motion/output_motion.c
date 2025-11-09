@@ -40,6 +40,7 @@ typedef unsigned long long __u64;
 
 // Forward declarations
 int send_webhook_notification_sync(CURL *curl_handle, double motion_level, time_t timestamp);
+static size_t discard_webhook_response(void *ptr, size_t size, size_t nmemb, void *userdata);
 
 // Webhook queue structure
 struct webhook_item {
@@ -677,6 +678,18 @@ int save_motion_frame(unsigned char *frame_data, int frame_size, double motion_l
 }
 
 /******************************************************************************
+Description.: Discard webhook response - don't print to console
+Input Value.: ptr, size, nmemb, userdata (standard curl write callback)
+Return Value: number of bytes processed
+******************************************************************************/
+static size_t discard_webhook_response(void *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    (void)ptr;      // Unused
+    (void)userdata; // Unused
+    return size * nmemb; // Return size to indicate we "processed" the data
+}
+
+/******************************************************************************
 Description.: Add webhook notification to queue (async)
 Input Value.: motion level
 Return Value: 0 on success, -1 on error
@@ -748,6 +761,8 @@ void* webhook_worker_thread(void *param)
     curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl_handle, CURLOPT_MAXREDIRS, 3L);
     curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "mjpg-streamer-motion/1.0");
+    // Discard response body - don't print to console
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, discard_webhook_response);
     
     while(webhook_thread_running) {
         struct webhook_item *item = NULL;
