@@ -206,7 +206,7 @@ static int resolve_paths(void)
         return 0;
     }
 
-    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx_app/OSXViewer", build_dir) < (int)sizeof(candidate)
+    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx/OSXViewer", build_dir) < (int)sizeof(candidate)
         && access(candidate, X_OK) == 0) {
         strncpy(helper_path, candidate, sizeof(helper_path));
         helper_path[sizeof(helper_path) - 1] = '\0';
@@ -214,7 +214,7 @@ static int resolve_paths(void)
         return 0;
     }
 
-    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx_app/OSXViewer.app/Contents/MacOS/OSXViewer", build_dir) < (int)sizeof(candidate)
+    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx/OSXViewer.app/Contents/MacOS/OSXViewer", build_dir) < (int)sizeof(candidate)
         && access(candidate, X_OK) == 0) {
         strncpy(helper_path, candidate, sizeof(helper_path));
         helper_path[sizeof(helper_path) - 1] = '\0';
@@ -222,7 +222,7 @@ static int resolve_paths(void)
         return 0;
     }
 
-    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx_app/OSXViewer", project_root) < (int)sizeof(candidate)
+    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx/OSXViewer", project_root) < (int)sizeof(candidate)
         && access(candidate, X_OK) == 0) {
         strncpy(helper_path, candidate, sizeof(helper_path));
         helper_path[sizeof(helper_path) - 1] = '\0';
@@ -230,7 +230,7 @@ static int resolve_paths(void)
         return 0;
     }
 
-    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx_app/OSXViewer.app/Contents/MacOS/OSXViewer", project_root) < (int)sizeof(candidate)
+    if (snprintf(candidate, sizeof(candidate), "%s/src/plugins/output_viewer_osx/OSXViewer.app/Contents/MacOS/OSXViewer", project_root) < (int)sizeof(candidate)
         && access(candidate, X_OK) == 0) {
         strncpy(helper_path, candidate, sizeof(helper_path));
         helper_path[sizeof(helper_path) - 1] = '\0';
