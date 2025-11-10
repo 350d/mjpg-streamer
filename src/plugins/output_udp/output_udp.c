@@ -169,7 +169,7 @@ void *worker_thread(void *arg)
         }
         
         /* copy frame to our local buffer */
-        memcpy(current_frame, pglobal->in[input_number].buf, frame_size);
+        simd_memcpy(current_frame, pglobal->in[input_number].buf, frame_size);
 
         /* allow others to access the global buffer again */
         pthread_mutex_unlock(&pglobal->in[input_number].db);

@@ -107,6 +107,7 @@ add_subdirectory(src/plugins/output_motion)
 add_subdirectory(src/plugins/output_rtsp)
 add_subdirectory(src/plugins/output_udp)
 add_subdirectory(src/plugins/output_viewer)
+add_subdirectory(src/plugins/output_viewer_osx)
 
 #
 # mjpg_streamer executable

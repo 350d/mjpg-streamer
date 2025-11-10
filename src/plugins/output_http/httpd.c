@@ -84,7 +84,7 @@ static int buffered_write(write_buffer *wb, const void *data, size_t len) {
         size_t space_in_buffer = sizeof(wb->buffer) - wb->buffer_pos;
         size_t to_copy = (remaining < space_in_buffer) ? remaining : space_in_buffer;
         
-        memcpy(wb->buffer + wb->buffer_pos, src, to_copy);
+        simd_memcpy(wb->buffer + wb->buffer_pos, src, to_copy);
         wb->buffer_pos += to_copy;
         src += to_copy;
         remaining -= to_copy;
@@ -892,86 +892,6 @@ void send_file(int id, int fd, char *parameter)
 }
 
 /******************************************************************************
-Description.: Executes the specified CGI file if exists
-Input Value.: * fd...........: filedescriptor to send data to
-              * id...........: specifies which server-context is the right one
-              * parameter....: the requested file name
-              * query_string.: query parameters
-Return Value: -
-******************************************************************************/
-void execute_cgi(int id, int fd, char *parameter, char *query_string)
-{
-    int lfd = 0, i;
-    int buffer_length = 0;
-    char *buffer = NULL;
-    char fn_buffer[BUFFER_SIZE] = {0};
-    FILE *f = NULL;
-    config conf = servers[id].conf;
-
-    /* build the absolute path to the file */
-    strncat(fn_buffer, conf.www_folder, sizeof(fn_buffer) - 1);
-    strncat(fn_buffer, parameter, sizeof(fn_buffer) - strlen(fn_buffer) - 1);
-
-    if((lfd = open(fn_buffer, O_RDONLY)) < 0) {
-        DBG("file %s not accessible\n", fn_buffer);
-        send_error(fd, 404, "Could not open file");
-        return;
-    }
-
-    char *enviroment =
-        "SERVER_SOFTWARE=\"mjpg-streamer\" "
-        //"SERVER_NAME=\"%s\" "
-        "SERVER_PROTOCOL=\"HTTP/1.1\" "
-        "SERVER_PORT=\"%d\" "  // OK
-        "GATEWAY_INTERFACE=\"CGI/1.1\" "
-        "REQUEST_METHOD=\"GET\" "
-        "SCRIPT_NAME=\"%s\" " // OK
-        "QUERY_STRING=\"%s\" " //OK
-        //"REMOTE_ADDR=\"%s\" "
-        //"REMOTE_PORT=\"%d\" "
-        "%s"; // OK
-
-    buffer_length = 3;
-    buffer_length = strlen(fn_buffer) + strlen(enviroment) + strlen(parameter) + 256;
-
-    buffer = malloc(buffer_length);
-    if (buffer == NULL) {
-        exit(EXIT_FAILURE);
-    }
-
-    sprintf(buffer,
-            enviroment,
-            conf.port,
-            parameter,
-            query_string,
-            fn_buffer);
-
-    f = popen(buffer, "r");
-    if(f == NULL) {
-        DBG("Unable to execute the requested CGI script\n");
-        send_error(fd, 403, "CGI script cannot be executed");
-        free(buffer);
-        close(lfd);
-        return;
-    }
-
-    while((i = fread(buffer, 1, sizeof(buffer), f)) > 0) {
-        if (write(fd, buffer, i) < 0) {
-            fclose(f);
-            free(buffer);
-            close(lfd);
-            return;
-        }
-    }
-
-    fclose(f);
-    free(buffer);
-    close(lfd);
-}
-
-
-
-/******************************************************************************
 Description.: Serve a connected TCP-client. This thread function is called
               for each connect of a HTTP client like a webbrowser. It determines
               if it is a valid HTTP request and dispatches between the different
@@ -1049,17 +969,17 @@ void *client_thread(void *arg)
                 req.parameter = malloc(len + 1);
                 if (req.parameter == NULL) {
                     send_error(lcfd.fd, 500, "could not allocate memory");
-                    close(lcfd.fd);
-                    return NULL;
-                }
-                memset(req.parameter, 0, len + 1);
-                strncpy(req.parameter, pb, len);
+            close(lcfd.fd);
+            return NULL;
+        }
+        memset(req.parameter, 0, len + 1);
+        strncpy(req.parameter, pb, len);
                 if (unescape(req.parameter) == -1) {
-                    free(req.parameter);
+            free(req.parameter);
                     send_error(lcfd.fd, 500, "could not properly parse parameter string");
-                    close(lcfd.fd);
-                    return NULL;
-                }
+            close(lcfd.fd);
+            return NULL;
+        }
             }
         }
     } else {
@@ -1082,24 +1002,6 @@ void *client_thread(void *arg)
         memset(req.parameter, 0, len + 1);
         strncpy(req.parameter, pb, len);
 
-        if (strstr(pb, ".cgi") != NULL) {
-            req.type = A_CGI;
-            pb = strchr(pb, '?');
-            if (pb != NULL) {
-                pb++;
-                len = strspn(pb, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ._-1234567890=&");
-                req.query_string = malloc(len + 1);
-                if (req.query_string == NULL)
-                    exit(EXIT_FAILURE);
-                memset(req.query_string, 0, len + 1);
-                strncpy(req.query_string, pb, len);
-            } else {
-                req.query_string = malloc(2);
-                if (req.query_string == NULL)
-                    exit(EXIT_FAILURE);
-                sprintf(req.query_string, " ");
-            }
-        }
         DBG("parameter (len: %d): \"%s\"\n", len, req.parameter);
     }
 
@@ -1157,10 +1059,10 @@ void *client_thread(void *arg)
 
     /* now it's time to answer */
     if (query_suffixed) {
-        if(!(input_number < pglobal->incnt)) {
-            DBG("Input number: %d out of range (valid: 0..%d)\n", input_number, pglobal->incnt-1);
-            send_error(lcfd.fd, 404, "Invalid input plugin number");
-            req.type = A_UNKNOWN;
+            if(!(input_number < pglobal->incnt)) {
+                DBG("Input number: %d out of range (valid: 0..%d)\n", input_number, pglobal->incnt-1);
+                send_error(lcfd.fd, 404, "Invalid input plugin number");
+                req.type = A_UNKNOWN;
         }
     }
 
@@ -1227,10 +1129,6 @@ void *client_thread(void *arg)
             }
         }
         } break;
-    case A_CGI:
-        DBG("cgi script: %s requested\n", req.parameter);
-        execute_cgi(lcfd.pc->id, lcfd.fd, req.parameter, req.query_string);
-        break;
     default:
         DBG("unknown request\n");
     }

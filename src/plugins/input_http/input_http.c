@@ -143,7 +143,7 @@ void on_image_received(char * data, int length){
         pglobal->in[plugin_number].timestamp = timestamp;
         pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
 
-        memcpy(pglobal->in[plugin_number].buf, data, length);
+        simd_memcpy(pglobal->in[plugin_number].buf, data, length);
 
         /* signal fresh_frame */
         pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);

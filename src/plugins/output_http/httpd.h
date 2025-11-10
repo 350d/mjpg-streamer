@@ -138,7 +138,6 @@ typedef enum {
     A_SNAPSHOT,
     A_STREAM,
     A_FILE,
-    A_CGI,
     A_TAKE
 } answer_t;
 

@@ -89,7 +89,7 @@ static int buffered_write(file_write_buffer *buf, const void *data, size_t len) 
         size_t space_in_buffer = sizeof(buf->buffer) - buf->buffer_pos;
         size_t to_copy = (remaining < space_in_buffer) ? remaining : space_in_buffer;
         
-        memcpy(buf->buffer + buf->buffer_pos, src, to_copy);
+        simd_memcpy(buf->buffer + buf->buffer_pos, src, to_copy);
         buf->buffer_pos += to_copy;
         src += to_copy;
         remaining -= to_copy;
@@ -746,7 +746,7 @@ int output_cmd(int plugin_id, unsigned int control_id, unsigned int group, int v
                                     }
                                     
                                     /* copy frame to our local buffer */
-                                    memcpy(tmp_framebuffer, pglobal->in[input_number].buf, frame_size);
+                                    simd_memcpy(tmp_framebuffer, pglobal->in[input_number].buf, frame_size);
                                     current_frame = tmp_framebuffer;
 
                                     /* allow others to access the global buffer again */

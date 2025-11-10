@@ -44,8 +44,8 @@
 #error "TurboJPEG is REQUIRED! Please install libturbojpeg-dev package. This project does not support libjpeg fallback."
 #endif
 
-#include <turbojpeg.h>
-#define JPEG_LIBRARY_TURBO 1
+    #include <turbojpeg.h>
+    #define JPEG_LIBRARY_TURBO 1
 
 /* Linux-specific includes */
 #ifdef __linux__
@@ -118,10 +118,10 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
         if (compress_rgb_to_jpeg(rgb_buffer, vd->width, vd->height, quality,
                                  &jpeg_buffer, &jpeg_size_long) == 0) {
             if (jpeg_size_long <= (unsigned long)size) {
-                memcpy(buffer, jpeg_buffer, jpeg_size_long);
+                simd_memcpy(buffer, jpeg_buffer, jpeg_size_long);
                 jpeg_size = (int)jpeg_size_long;
                 result = 0;
-            }
+    }
             free(jpeg_buffer);
         }
         
@@ -131,7 +131,7 @@ int compress_image_to_jpeg(struct vdIn *vd, unsigned char *buffer, int size, int
         /* Use tmpbytesused for actual frame size (JPEG size varies per frame) */
         int frame_size = (vd->tmpbytesused > 0) ? vd->tmpbytesused : vd->framesizeIn;
         if (vd->framebuffer && frame_size > 0 && frame_size <= size) {
-            memcpy(buffer, vd->framebuffer, frame_size);
+            simd_memcpy(buffer, vd->framebuffer, frame_size);
             jpeg_size = frame_size;
             result = 0;
         }
@@ -214,7 +214,7 @@ int jpeg_decode_to_y_component(unsigned char *jpeg_data, int jpeg_size, int scal
     if (!jpeg_data || jpeg_size <= 0 || !y_data || !width || !height) {
         return -1;
     }
-    
+
     /* Use TurboJPEG 2.x API */
     tjhandle handle = NULL;
     unsigned char *output_data = NULL;
@@ -225,13 +225,13 @@ int jpeg_decode_to_y_component(unsigned char *jpeg_data, int jpeg_size, int scal
     if (!handle) {
         return -1;
     }
-    
+
     /* Get dimensions and subsampling from JPEG header */
     int jpeg_width = 0, jpeg_height = 0, subsamp = 0;
     if (tjDecompressHeader2(handle, jpeg_data, jpeg_size, &jpeg_width, &jpeg_height, &subsamp) != 0) {
         return -1;
     }
-    
+
     /* Use provided dimensions if available, otherwise use JPEG dimensions */
     int target_width = (known_width > 0) ? known_width : jpeg_width;
     int target_height = (known_height > 0) ? known_height : jpeg_height;
@@ -241,7 +241,7 @@ int jpeg_decode_to_y_component(unsigned char *jpeg_data, int jpeg_size, int scal
         target_width /= scale_factor;
         target_height /= scale_factor;
     }
-    
+
     /* Allocate output buffer */
     output_data = malloc(target_width * target_height);
     if (!output_data) {
@@ -282,9 +282,9 @@ int decode_any_to_y_component(unsigned char *data, int data_size, int scale_fact
     }
     
     /* For other formats, return error */
-    return -1;
-}
-
+        return -1;
+    }
+    
 /* Global cache for quantization tables (per-frame tables stored in rtp_jpeg_frame_t) */
 static uint8_t g_qt_luma[64];
 static uint8_t g_qt_chroma[64];
@@ -430,7 +430,7 @@ void rtpjpeg_cache_qtables_from_jpeg(const uint8_t *p, size_t sz)
                     
                     if (dst) {
                         /* Copy 8-bit table */
-                        memcpy(dst, p + i + off, 64);
+                        simd_memcpy(dst, p + i + off, 64);
                         /* CRITICAL: Sanitize immediately after copy - ensure no zeros */
                         for (int k = 0; k < 64; k++) {
                             if (dst[k] == 0) dst[k] = 1;
@@ -542,8 +542,8 @@ int jpeg_decompress_to_rgb(unsigned char *jpeg_data, int jpeg_size,
     
     /* Don't destroy cached handle */
     return (result == 0) ? 0 : -1;
-}
-
+    }
+    
 /* CRITICAL: We use ONLY TurboJPEG - no libjpeg fallback */
 /* These functions are no longer needed - TurboJPEG is required at compile time */
 
@@ -609,7 +609,7 @@ int jpeg_strip_to_rtp(const unsigned char *jfif, size_t jfif_sz,
     if (!jfif || !out || !out_sz || jfif_sz < 4 || w == 0 || h == 0) {
         return -1;
     }
-
+    
     /* 1) Find first SOI (FF D8). If input doesn't start with SOI, resync to the first SOI. */
     size_t offset = 0;
     if (!(jfif[0] == 0xFF && jfif[1] == 0xD8)) {
@@ -632,7 +632,7 @@ int jpeg_strip_to_rtp(const unsigned char *jfif, size_t jfif_sz,
 
     const unsigned char *p = jfif + offset;
     size_t sz = jfif_sz - offset;
-
+    
     /* 2) Walk through metadata segments until SOS (FF DA). */
     size_t pos = 2; /* after SOI */
     while (pos + 1 < sz) {
@@ -655,9 +655,9 @@ int jpeg_strip_to_rtp(const unsigned char *jfif, size_t jfif_sz,
             /* EOI encountered before SOS - degenerate case, trim here */
             size_t eoi_pos = pos;
             if (eoi_pos > sz) eoi_pos = sz;
-            memcpy(out, p, eoi_pos);
+            simd_memcpy(out, p, eoi_pos);
             *out_sz = eoi_pos;
-            return 0;
+    return 0;
         }
         if (marker >= 0xD0 && marker <= 0xD7) {
             /* RSTn have no length */
@@ -730,10 +730,10 @@ int jpeg_strip_to_rtp(const unsigned char *jfif, size_t jfif_sz,
             eoi_pos = sz;
         }
     }
-
+    
     /* 5) Copy strictly up to the first EOI (do NOT include any bytes after EOI). */
     if (eoi_pos > sz) eoi_pos = sz;
-    memcpy(out, p, eoi_pos);
+    simd_memcpy(out, p, eoi_pos);
     *out_sz = eoi_pos;
 
 #ifdef OPRINT

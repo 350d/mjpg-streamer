@@ -389,7 +389,7 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
       if(pData->offset == 0)
         pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
-      memcpy(pData->offset + pglobal->in[plugin_number].buf, buffer->data, buffer->length);
+      simd_memcpy(pData->offset + pglobal->in[plugin_number].buf, buffer->data, buffer->length);
       pData->offset += buffer->length;
       //fwrite(buffer->data, 1, buffer->length, pData->file_handle);
       mmal_buffer_header_mem_unlock(buffer);
