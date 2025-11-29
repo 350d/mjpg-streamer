@@ -2,6 +2,8 @@
 
 A high-performance MJPEG streaming server with **advanced motion detection** and **zone-based analysis**. Optimized for Raspberry Pi Zero and ARM devices with comprehensive performance enhancements.
 
+<img width="1248" height="739" alt="image" src="https://github.com/user-attachments/assets/aea078f0-c544-4031-ba75-a215b674fbdc" />
+
 ## 🚀 Key Features
 
 - **🎯 Zone-based Motion Detection**: Advanced motion analysis with configurable zones and weights
