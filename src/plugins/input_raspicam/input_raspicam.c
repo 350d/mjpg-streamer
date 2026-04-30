@@ -46,6 +46,7 @@
 #include "mmal/mmal.h"
 #include "mmal/util/mmal_default_components.h"
 #include "mmal/util/mmal_connection.h"
+#include "mmal/util/mmal_util_params.h"
 
 #include "RaspiCamControl.c"
 
@@ -84,6 +85,7 @@ static int usestills = 0;
 static int wantPreview = 0;
 static int wantTimestamp = 0;
 static RASPICAM_CAMERA_PARAMETERS c_params;
+static size_t frame_buffer_capacity = 0;
 
 static struct timeval timestamp;
 
@@ -95,6 +97,8 @@ typedef struct
   VCOS_SEMAPHORE_T complete_semaphore; /// semaphore which is posted when we reach end of frame (indicates end of capture or fault)
   MMAL_POOL_T *pool; /// pointer to our state in case required in callback
   uint32_t offset;
+  int frame_locked;
+  int frame_dropped;
 } PORT_USERDATA;
 
 
@@ -384,13 +388,27 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
 
       //fprintf(stderr, "The flags are %x of length %i offset %i\n", buffer->flags, buffer->length, pData->offset);
 
-      //Write bytes
-      /* copy JPG picture to global buffer */
-      if(pData->offset == 0)
-        pthread_mutex_lock(&pglobal->in[plugin_number].db);
+      if (!pData->frame_dropped) {
+        /* Lock frame buffer once at frame start and unlock at frame end */
+        if (!pData->frame_locked) {
+          pthread_mutex_lock(&pglobal->in[plugin_number].db);
+          pData->frame_locked = 1;
+        }
 
-      simd_memcpy(pData->offset + pglobal->in[plugin_number].buf, buffer->data, buffer->length);
-      pData->offset += buffer->length;
+        if ((size_t)pData->offset + (size_t)buffer->length <= frame_buffer_capacity) {
+          simd_memcpy(pData->offset + pglobal->in[plugin_number].buf, buffer->data, buffer->length);
+          pData->offset += buffer->length;
+        } else {
+          DBG("Dropping oversized JPEG frame: offset=%u chunk=%u capacity=%zu\n",
+              pData->offset, (unsigned int)buffer->length, frame_buffer_capacity);
+          pData->frame_dropped = 1;
+          pData->offset = 0;
+          if (pData->frame_locked) {
+            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+            pData->frame_locked = 0;
+          }
+        }
+      }
       //fwrite(buffer->data, 1, buffer->length, pData->file_handle);
       mmal_buffer_header_mem_unlock(buffer);
     }
@@ -398,34 +416,40 @@ static void encoder_buffer_callback(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buf
     // Now flag if we have completed
     if (buffer->flags & (MMAL_BUFFER_HEADER_FLAG_FRAME_END | MMAL_BUFFER_HEADER_FLAG_TRANSMISSION_FAILED))
     {
-      // Update frame metadata BEFORE signaling
-      pglobal->in[plugin_number].prev_size = pglobal->in[plugin_number].current_size;
-      pglobal->in[plugin_number].current_size = pData->offset;
-      pglobal->in[plugin_number].size = pData->offset;
-      pglobal->in[plugin_number].frame_sequence++;
+      if (!pData->frame_dropped && pData->frame_locked) {
+        // Update frame metadata BEFORE signaling
+        pglobal->in[plugin_number].prev_size = pglobal->in[plugin_number].current_size;
+        pglobal->in[plugin_number].current_size = pData->offset;
+        pglobal->in[plugin_number].size = pData->offset;
+        pglobal->in[plugin_number].frame_sequence++;
 
-      //Set frame timestamp
-      if(wantTimestamp)
-      {
-        gettimeofday(&timestamp, NULL);
-        pglobal->in[plugin_number].timestamp = timestamp;
-        pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
+        //Set frame timestamp
+        if(wantTimestamp)
+        {
+          gettimeofday(&timestamp, NULL);
+          pglobal->in[plugin_number].timestamp = timestamp;
+          pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
+        }
+        else
+        {
+          // Set default timestamp even if not requested
+          gettimeofday(&timestamp, NULL);
+          pglobal->in[plugin_number].timestamp = timestamp;
+          pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
+        }
+
+        //mark frame complete
+        complete = 1;
+
+        pData->offset = 0;
+        /* signal fresh_frame */
+        pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
+        pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+        pData->frame_locked = 0;
+      } else {
+        pData->offset = 0;
       }
-      else
-      {
-        // Set default timestamp even if not requested
-        gettimeofday(&timestamp, NULL);
-        pglobal->in[plugin_number].timestamp = timestamp;
-        pglobal->in[plugin_number].frame_timestamp_ms = (timestamp.tv_sec * 1000LL) + (timestamp.tv_usec / 1000);
-      }
-
-      //mark frame complete
-      complete = 1;
-
-      pData->offset = 0;
-      /* signal fresh_frame */
-      pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
-      pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+      pData->frame_dropped = 0;
     }
   }
   else
@@ -500,9 +524,12 @@ int input_run(int id)
   pglobal->in[id].prev_size = 0;
   pglobal->in[id].frame_sequence = 0;
   
-  // OPTIMIZATION: Allocate smaller buffer for MJPEG instead of RGB
-  // MJPEG is typically 10-20x smaller than raw RGB data
-  pglobal->in[id].buf = malloc(width * height / 4); // Smaller buffer for MJPEG
+  // Allocate enough room for worst-case JPEG frame size
+  frame_buffer_capacity = (size_t)width * (size_t)height * 3;
+  if (frame_buffer_capacity < (1024 * 1024)) {
+    frame_buffer_capacity = 1024 * 1024;
+  }
+  pglobal->in[id].buf = malloc(frame_buffer_capacity);
   if (pglobal->in[id].buf == NULL)
   {
     fprintf(stderr, "could not allocate memory\n");
@@ -945,6 +972,8 @@ void *worker_thread(void *arg)
   callback_data.file_handle = NULL;
   callback_data.pool = pool;
   callback_data.offset = 0;
+  callback_data.frame_locked = 0;
+  callback_data.frame_dropped = 0;
 
   vcos_assert(vcos_semaphore_create(&callback_data.complete_semaphore, "RaspiStill-sem", 0) == VCOS_SUCCESS);
 
