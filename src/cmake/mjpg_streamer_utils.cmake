@@ -52,6 +52,12 @@ macro(MJPG_STREAMER_PLUGIN_COMPILE MODULE_NAME)
 	        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins"
 	    )
 	    
+	    # Link shared utility code directly into each plugin.
+	    # This avoids runtime undefined symbols for functions that are only
+	    # referenced from plugins (and therefore might not be pulled from
+	    # static archives by the main executable linker).
+	    target_link_libraries(${MODULE_NAME} mjpg_streamer_utils ${JPEG_LIBRARY})
+	    
 	    # Add undefined dynamic lookup for macOS compatibility
 	    if(APPLE)
 	        set_target_properties(${MODULE_NAME} PROPERTIES 
