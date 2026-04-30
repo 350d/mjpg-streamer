@@ -26,8 +26,10 @@
 #include <getopt.h>
 #include <pthread.h>
 #include <syslog.h>
+#include <errno.h>
+#include <limits.h>
 
-#include <SDL/SDL.h>
+#include <SDL.h>
 
 #include "../../utils.h"
 #include "../../jpeg_utils.h"
@@ -90,7 +92,9 @@ void *worker_thread(void *arg)
 {
     int frame_size = 0, firstrun = 1;
 
-    SDL_Surface *screen = NULL, *image = NULL;
+    SDL_Window *window = NULL;
+    SDL_Renderer *renderer = NULL;
+    SDL_Texture *texture = NULL;
     jpeg_rgb_image rgbimage;
 
     /* initialize the buffer for the decompressed image */
@@ -154,37 +158,56 @@ void *worker_thread(void *arg)
         }
 
         if(firstrun) {
-            /* create the primary surface (the visible window) */
-            screen = SDL_SetVideoMode(rgbimage.width, rgbimage.height, 0, SDL_ANYFORMAT | SDL_HWSURFACE);
-            SDL_WM_SetCaption("MJPG-Streamer Viewer", NULL);
+            window = SDL_CreateWindow("MJPG-Streamer Viewer",
+                                      SDL_WINDOWPOS_UNDEFINED,
+                                      SDL_WINDOWPOS_UNDEFINED,
+                                      rgbimage.width,
+                                      rgbimage.height,
+                                      0);
+            if (!window) {
+                OPRINT("Could not create SDL2 window: %s\n", SDL_GetError());
+                free(rgbimage.buffer);
+                break;
+            }
 
-            /* create a SDL surface to display the data */
-            image = SDL_AllocSurface(SDL_SWSURFACE, rgbimage.width, rgbimage.height, 24,
-#if SDL_BYTEORDER == SDL_LIL_ENDIAN
-                                     0x0000FF, 0x00FF00, 0xFF0000,
-#else
-                                     0xFF0000, 0x00FF00, 0x0000FF,
-#endif
-                                     0);
+            renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+            if (!renderer) {
+                OPRINT("Could not create SDL2 renderer: %s\n", SDL_GetError());
+                free(rgbimage.buffer);
+                break;
+            }
+
+            texture = SDL_CreateTexture(renderer,
+                                        SDL_PIXELFORMAT_RGB24,
+                                        SDL_TEXTUREACCESS_STREAMING,
+                                        rgbimage.width,
+                                        rgbimage.height);
+            if (!texture) {
+                OPRINT("Could not create SDL2 texture: %s\n", SDL_GetError());
+                free(rgbimage.buffer);
+                break;
+            }
 
             firstrun = 0;
         }
 
-        /* copy the decoded data to the SDL surface */
-        memcpy(image->pixels, rgbimage.buffer, rgbimage.width * rgbimage.height * 3);
+        if (SDL_UpdateTexture(texture, NULL, rgbimage.buffer, rgbimage.width * 3) != 0) {
+            DBG("SDL_UpdateTexture failed: %s\n", SDL_GetError());
+            free(rgbimage.buffer);
+            continue;
+        }
         free(rgbimage.buffer);
 
-        /* copy the image to the primary surface */
-        SDL_BlitSurface(image, NULL, screen, NULL);
-
-        /* redraw the whole surface */
-        SDL_Flip(screen);
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, NULL, NULL);
+        SDL_RenderPresent(renderer);
     }
 
     pthread_cleanup_pop(1);
 
-    /* get rid of the image */
-    SDL_FreeSurface(image);
+    if (texture) SDL_DestroyTexture(texture);
+    if (renderer) SDL_DestroyRenderer(renderer);
+    if (window) SDL_DestroyWindow(window);
 
     return NULL;
 }
@@ -287,7 +310,6 @@ int output_run(int id)
 
 int output_cmd()
 {
-
-
+    return 0;
 }
 
