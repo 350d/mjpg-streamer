@@ -202,7 +202,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=arm-linux-gnueabi-g++ \
           -DCMAKE_C_FLAGS="-march=armv6 -mfloat-abi=soft -Wno-unused-result -Wno-format-overflow" \
           -DCMAKE_CXX_FLAGS="-march=armv6 -mfloat-abi=soft -Wno-unused-result -Wno-format-overflow" \
-          -DCMAKE_EXE_LINKER_FLAGS="-static" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_LIBRARY_PATH=${TURBOJPEG_ROOT}/lib \
@@ -449,7 +449,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
           -DCMAKE_C_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Wno-unused-result -Wno-format-overflow" \
           -DCMAKE_CXX_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Wno-unused-result -Wno-format-overflow" \
-          -DCMAKE_EXE_LINKER_FLAGS="-static" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_LIBRARY_PATH=${TURBOJPEG_ROOT}/lib \
@@ -696,7 +696,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
           -DCMAKE_C_FLAGS="-march=armv8-a -Wno-unused-result -Wno-format-overflow" \
           -DCMAKE_CXX_FLAGS="-march=armv8-a -Wno-unused-result -Wno-format-overflow" \
-          -DCMAKE_EXE_LINKER_FLAGS="-static" \
+          -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_LIBRARY_PATH=${TURBOJPEG_ROOT}/lib \
