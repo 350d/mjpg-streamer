@@ -199,9 +199,7 @@ jobs:
           -DCMAKE_SYSTEM_NAME=Linux \
           -DCMAKE_SYSTEM_PROCESSOR=arm \
           -DCMAKE_C_COMPILER=arm-linux-gnueabi-gcc \
-          -DCMAKE_CXX_COMPILER=arm-linux-gnueabi-g++ \
           -DCMAKE_C_FLAGS="-march=armv6 -mfloat-abi=soft -Wno-unused-result -Wno-format-overflow" \
-          -DCMAKE_CXX_FLAGS="-march=armv6 -mfloat-abi=soft -Wno-unused-result -Wno-format-overflow" \
           -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
           -DCMAKE_BUILD_TYPE=Release \
@@ -446,9 +444,7 @@ jobs:
           -DCMAKE_SYSTEM_NAME=Linux \
           -DCMAKE_SYSTEM_PROCESSOR=arm \
           -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
-          -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
           -DCMAKE_C_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Wno-unused-result -Wno-format-overflow" \
-          -DCMAKE_CXX_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Wno-unused-result -Wno-format-overflow" \
           -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
           -DCMAKE_BUILD_TYPE=Release \
@@ -693,9 +689,7 @@ jobs:
           -DCMAKE_SYSTEM_NAME=Linux \
           -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
           -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
           -DCMAKE_C_FLAGS="-march=armv8-a -Wno-unused-result -Wno-format-overflow" \
-          -DCMAKE_CXX_FLAGS="-march=armv8-a -Wno-unused-result -Wno-format-overflow" \
           -DCMAKE_EXE_LINKER_FLAGS="-Wl,--as-needed" \
           -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
           -DCMAKE_BUILD_TYPE=Release \
@@ -771,7 +765,7 @@ jobs:
         echo "- Webhook notifications (GET/POST with -w/-p parameters)" >> $GITHUB_STEP_SUMMARY
         echo "- Cross-compilation for all Pi models" >> $GITHUB_STEP_SUMMARY
         echo "- Optimized for resource-constrained devices" >> $GITHUB_STEP_SUMMARY
-        echo "- Fully static builds with no external dependencies" >> $GITHUB_STEP_SUMMARY
+        echo "- Runtime-linked binaries with optimized plugin set" >> $GITHUB_STEP_SUMMARY
         echo "- HTTPS webhook support with mbedTLS" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### 📋 Build Status:" >> $GITHUB_STEP_SUMMARY
