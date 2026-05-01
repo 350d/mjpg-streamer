@@ -77,11 +77,26 @@ set (MJPG_STREAMER_PLUGIN_INSTALL_PATH "lib/mjpg-streamer")
 
 # TurboJPEG is REQUIRED - no fallback to libjpeg
 find_library(TURBOJPEG_LIB turbojpeg)
+find_path(TURBOJPEG_INCLUDE_DIR turbojpeg.h
+          HINTS
+            ${CMAKE_INCLUDE_PATH}
+          PATH_SUFFIXES
+            include
+            include/turbojpeg
+            turbojpeg)
 if(TURBOJPEG_LIB)
     set(TURBOJPEG_FOUND TRUE)
     set(JPEG_LIBRARY ${TURBOJPEG_LIB})
+    if(TURBOJPEG_INCLUDE_DIR)
+        include_directories(${TURBOJPEG_INCLUDE_DIR})
+    endif()
     add_definitions(-DHAVE_TURBOJPEG)
     message(STATUS "Found TurboJPEG: ${TURBOJPEG_LIB}")
+    if(TURBOJPEG_INCLUDE_DIR)
+        message(STATUS "Found TurboJPEG headers: ${TURBOJPEG_INCLUDE_DIR}")
+    else()
+        message(FATAL_ERROR "TurboJPEG headers not found (missing turbojpeg.h). Please install libturbojpeg-dev (on Linux) or turbojpeg (on macOS via Homebrew).")
+    endif()
 else()
     message(FATAL_ERROR "TurboJPEG library not found. TurboJPEG is REQUIRED for this project. Please install libturbojpeg-dev (on Linux) or turbojpeg (on macOS via Homebrew).")
 endif()
