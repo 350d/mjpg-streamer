@@ -14,6 +14,7 @@
 @property (strong, nonatomic) NSDate *lastModificationDate;
 @property (assign, nonatomic) unsigned long long lastFileLength;
 @property (assign, nonatomic) BOOL hasAdjustedWindowSize;
+@property (assign, nonatomic) NSSize currentImageSize;
 @property (strong, nonatomic) dispatch_source_t fileMonitor;
 @property (strong, nonatomic) dispatch_queue_t fileMonitorQueue;
 @property (assign, nonatomic) int fileDescriptor;
@@ -30,6 +31,7 @@
     self.disableFlagPath = [directoryPath stringByAppendingPathComponent:@"output_viewer_osx_disabled.flag"];
     self.lastFileLength = 0;
     self.hasAdjustedWindowSize = NO;
+    self.currentImageSize = NSZeroSize;
     self.fileDescriptor = -1;
 
     [self configureWindow];
@@ -74,6 +76,7 @@
     self.window.delegate = self;
     [self.window setTitle:@"MJPG-Streamer macOS Viewer"];
     [self.window setBackgroundColor:[NSColor blackColor]];
+    [self.window setContentAspectRatio:NSMakeSize(initialWidth, initialHeight)];
 
     self.imageView = [[NSImageView alloc] initWithFrame:contentRect];
     self.imageView.imageScaling = NSImageScaleProportionallyUpOrDown;
@@ -181,6 +184,20 @@
     self.hasAdjustedWindowSize = YES;
 }
 
+- (void)updateWindowAspectRatioForImage:(NSImage *)image {
+    if (!image || image.size.width <= 0 || image.size.height <= 0) {
+        return;
+    }
+
+    NSSize newImageSize = NSMakeSize(image.size.width, image.size.height);
+    if (NSEqualSizes(self.currentImageSize, newImageSize)) {
+        return;
+    }
+
+    self.currentImageSize = newImageSize;
+    [self.window setContentAspectRatio:newImageSize];
+}
+
 - (void)updateImageIfNeeded {
     NSError *error = nil;
     NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -211,6 +228,7 @@
     }
 
     self.imageView.image = image;
+    [self updateWindowAspectRatioForImage:image];
 
     if (!self.hasAdjustedWindowSize) {
         [self resizeWindowToFitImage:image];
