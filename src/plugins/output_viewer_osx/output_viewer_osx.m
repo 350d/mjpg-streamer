@@ -45,6 +45,8 @@
 #define FRAME_FILENAME "output_viewer_osx_frame.jpg"
 #define FRAME_TMP_FILENAME "output_viewer_osx_frame.tmp"
 #define DISABLE_FLAG_FILENAME "output_viewer_osx_disabled.flag"
+#define VIEWER_TITLE_ENV "MJPG_STREAMER_OSX_TITLE"
+#define VIEWER_TITLE_DEFAULT "MJPEG Streamer: output viewer osx"
 
 static pthread_t worker;
 static globals *pglobal;
@@ -59,6 +61,7 @@ static char frame_path[PATH_MAX];
 static char frame_tmp_path[PATH_MAX];
 static char tmp_dir_path[PATH_MAX];
 static char disable_flag_path[PATH_MAX];
+static char viewer_title[512];
 static int viewer_disabled = 0;
 static int viewer_disabled_warned = 0;
 
@@ -115,6 +118,107 @@ static int ensure_directory(const char *path)
     }
 
     return 0;
+}
+
+static void normalize_plugin_name(const char *plugin_path, char *dest, size_t dest_size)
+{
+    const char *name = plugin_path;
+    size_t j = 0;
+    int previous_space = 1;
+
+    if (!dest || dest_size == 0) {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (!plugin_path || plugin_path[0] == '\0') {
+        return;
+    }
+
+    name = strrchr(plugin_path, '/');
+    if (name) {
+        name++;
+    } else {
+        name = plugin_path;
+    }
+
+    for (size_t i = 0; name[i] != '\0' && j + 1 < dest_size; i++) {
+        char c = name[i];
+
+        if (c == '.') {
+            break;
+        }
+
+        if (c == '_' || c == '-') {
+            if (!previous_space && j + 1 < dest_size) {
+                dest[j++] = ' ';
+                previous_space = 1;
+            }
+            continue;
+        }
+
+        if (c == ' ') {
+            if (!previous_space && j + 1 < dest_size) {
+                dest[j++] = ' ';
+                previous_space = 1;
+            }
+            continue;
+        }
+
+        dest[j++] = c;
+        previous_space = 0;
+    }
+
+    while (j > 0 && dest[j - 1] == ' ') {
+        j--;
+    }
+    dest[j] = '\0';
+}
+
+static void build_viewer_title(void)
+{
+    size_t offset;
+    int written;
+    char normalized_input[128];
+    char normalized_output[128];
+
+    snprintf(viewer_title, sizeof(viewer_title), "%s", VIEWER_TITLE_DEFAULT);
+
+    if (!pglobal || input_number < 0 || input_number >= pglobal->incnt) {
+        return;
+    }
+
+    normalize_plugin_name(pglobal->in[input_number].plugin, normalized_input, sizeof(normalized_input));
+    if (normalized_input[0] == '\0') {
+        return;
+    }
+
+    written = snprintf(viewer_title, sizeof(viewer_title), "MJPEG Streamer: %s", normalized_input);
+    if (written < 0 || written >= (int)sizeof(viewer_title)) {
+        snprintf(viewer_title, sizeof(viewer_title), "%s", VIEWER_TITLE_DEFAULT);
+        return;
+    }
+    offset = strlen(viewer_title);
+
+    for (int i = 0; i < pglobal->outcnt; i++) {
+        if (!pglobal->out[i].plugin) {
+            continue;
+        }
+
+        normalize_plugin_name(pglobal->out[i].plugin, normalized_output, sizeof(normalized_output));
+        if (normalized_output[0] == '\0') {
+            continue;
+        }
+
+        written = snprintf(viewer_title + offset,
+                           sizeof(viewer_title) - offset,
+                           " → %s",
+                           normalized_output);
+        if (written < 0 || written >= (int)(sizeof(viewer_title) - offset)) {
+            break;
+        }
+        offset += (size_t)written;
+    }
 }
 
 static void refresh_viewer_disabled_state(void)
@@ -275,7 +379,7 @@ static void stop_helper(void)
 static int start_helper_if_needed(void)
 {
     int spawn_result;
-    char *argv_local[3];
+    char *argv_local[4];
 
     refresh_viewer_disabled_state();
 
@@ -300,7 +404,12 @@ static int start_helper_if_needed(void)
 
     argv_local[0] = helper_path;
     argv_local[1] = frame_path;
-    argv_local[2] = NULL;
+    argv_local[2] = viewer_title;
+    argv_local[3] = NULL;
+
+    if (setenv(VIEWER_TITLE_ENV, viewer_title, 1) != 0) {
+        OPRINT("failed to set %s: %s\n", VIEWER_TITLE_ENV, strerror(errno));
+    }
 
     spawn_result = posix_spawn(&viewer_pid, helper_path, NULL, NULL, argv_local, environ);
     if (spawn_result != 0) {
@@ -577,6 +686,7 @@ int output_run(int id)
     unlink(disable_flag_path);
     viewer_disabled = 0;
     viewer_disabled_warned = 0;
+    build_viewer_title();
 
     if (helper_available) {
         start_helper_if_needed();
