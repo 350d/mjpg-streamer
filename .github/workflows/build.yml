@@ -91,8 +91,8 @@ jobs:
           -DCMAKE_C_FLAGS="-march=armv6 -mfloat-abi=soft -O2" \
           -DCMAKE_CXX_FLAGS="-march=armv6 -mfloat-abi=soft -O2" \
           -DCMAKE_INSTALL_PREFIX=/opt/libjpeg-turbo-armv6 \
-          -DENABLE_SHARED=OFF \
-          -DENABLE_STATIC=ON \
+          -DENABLE_SHARED=ON \
+          -DENABLE_STATIC=OFF \
           -DWITH_SIMD=OFF
         make -j$(nproc)
         sudo make install
@@ -207,6 +207,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_LIBRARY_PATH=${TURBOJPEG_ROOT}/lib \
           -DCMAKE_INCLUDE_PATH=${TURBOJPEG_ROOT}/include \
+          -DTURBOJPEG_LIBRARY=${TURBOJPEG_ROOT}/lib/libturbojpeg.so \
           -DJPEG_INCLUDE_DIR=${JPEG_ROOT}/include \
           -DJPEG_LIBRARY=${JPEG_ROOT}/lib/libjpeg.a \
           -DCURL_INCLUDE_DIR=${CURL_ROOT}/include \
@@ -337,8 +338,8 @@ jobs:
           -DCMAKE_C_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -O2" \
           -DCMAKE_CXX_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -O2" \
           -DCMAKE_INSTALL_PREFIX=/opt/libjpeg-turbo-armv7 \
-          -DENABLE_SHARED=OFF \
-          -DENABLE_STATIC=ON \
+          -DENABLE_SHARED=ON \
+          -DENABLE_STATIC=OFF \
           -DWITH_SIMD=OFF
         make -j$(nproc)
         sudo make install
@@ -453,6 +454,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_LIBRARY_PATH=${TURBOJPEG_ROOT}/lib \
           -DCMAKE_INCLUDE_PATH=${TURBOJPEG_ROOT}/include \
+          -DTURBOJPEG_LIBRARY=${TURBOJPEG_ROOT}/lib/libturbojpeg.so \
           -DJPEG_INCLUDE_DIR=${JPEG_ROOT}/include \
           -DJPEG_LIBRARY=${JPEG_ROOT}/lib/libjpeg.a \
           -DCURL_INCLUDE_DIR=${CURL_ROOT}/include \
@@ -583,8 +585,8 @@ jobs:
           -DCMAKE_C_FLAGS="-march=armv8-a -O2" \
           -DCMAKE_CXX_FLAGS="-march=armv8-a -O2" \
           -DCMAKE_INSTALL_PREFIX=/opt/libjpeg-turbo-arm64 \
-          -DENABLE_SHARED=OFF \
-          -DENABLE_STATIC=ON \
+          -DENABLE_SHARED=ON \
+          -DENABLE_STATIC=OFF \
           -DWITH_SIMD=OFF
         make -j$(nproc)
         sudo make install
@@ -699,6 +701,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_LIBRARY_PATH=${TURBOJPEG_ROOT}/lib \
           -DCMAKE_INCLUDE_PATH=${TURBOJPEG_ROOT}/include \
+          -DTURBOJPEG_LIBRARY=${TURBOJPEG_ROOT}/lib/libturbojpeg.so \
           -DJPEG_INCLUDE_DIR=${JPEG_ROOT}/include \
           -DJPEG_LIBRARY=${JPEG_ROOT}/lib/libjpeg.a \
           -DCURL_INCLUDE_DIR=${CURL_ROOT}/include \

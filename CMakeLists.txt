@@ -76,7 +76,12 @@ set (MJPG_STREAMER_PLUGIN_INSTALL_PATH "lib/mjpg-streamer")
 #
 
 # TurboJPEG is REQUIRED - no fallback to libjpeg
-find_library(TURBOJPEG_LIB turbojpeg)
+set(TURBOJPEG_LIBRARY "" CACHE FILEPATH "Path to TurboJPEG library (optional override)")
+if(TURBOJPEG_LIBRARY AND EXISTS "${TURBOJPEG_LIBRARY}")
+    set(TURBOJPEG_LIB "${TURBOJPEG_LIBRARY}")
+else()
+    find_library(TURBOJPEG_LIB turbojpeg)
+endif()
 find_path(TURBOJPEG_INCLUDE_DIR turbojpeg.h
           HINTS
             ${CMAKE_INCLUDE_PATH}
