@@ -1,5 +1,12 @@
 
-find_package(SDL2 REQUIRED)
+if(CMAKE_CROSSCOMPILING)
+    # Cross targets usually don't have host SDL2 packages available in CI.
+    # Skip viewer plugin so headless/embedded builds can proceed.
+    message(STATUS "Cross-compilation detected - disabling output_viewer (SDL2)")
+    set(SDL2_FOUND FALSE)
+else()
+    find_package(SDL2 QUIET)
+endif()
 
 MJPG_STREAMER_PLUGIN_OPTION(output_viewer "SDL2 output viewer plugin"
                             ONLYIF JPEG_LIBRARY SDL2_FOUND)
