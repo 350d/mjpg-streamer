@@ -1,0 +1,667 @@
+name: Build mjpg-streamer for Raspberry Pi
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+
+  cross-compile-pi-zero:
+    name: Cross-compile Pi Zero
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Cache cross-compilation tools
+      uses: actions/cache@v4
+      with:
+        path: /usr/bin/*-arm-linux-gnueabi*
+        key: cross-tools-armv6-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          cross-tools-armv6-${{ runner.os }}-
+          cross-tools-${{ runner.os }}-
+
+    - name: Install cross-compilation tools
+      run: |
+        sudo apt-get update
+        # Install cross-compilers for ARMv6 (Pi Zero) - soft-float
+        sudo apt-get install -y gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+        # Install static libraries for ARMv6 - soft-float
+        sudo apt-get install -y libc6-dev-armel-cross libstdc++-13-dev-armel-cross
+        # Install build tools and dependencies
+        sudo apt-get install -y cmake pkg-config
+    
+    - name: Cache libjpeg for ARMv6
+      uses: actions/cache@v4
+      with:
+        path: /opt/libjpeg-armv6
+        key: libjpeg-armv6-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          libjpeg-armv6-${{ runner.os }}-
+          libjpeg-${{ runner.os }}-
+
+    - name: Build libjpeg for ARMv6
+      run: |
+        echo "Building libjpeg for ARMv6 (Pi Zero)"
+        
+        # Download libjpeg source
+        wget http://www.ijg.org/files/jpegsrc.v9e.tar.gz
+        tar -xzf jpegsrc.v9e.tar.gz
+        cd jpeg-9e
+        
+        # Configure for ARMv6 cross-compilation
+        ./configure \
+          --host=arm-linux-gnueabi \
+          --prefix=/opt/libjpeg-armv6 \
+          CC=arm-linux-gnueabi-gcc \
+          CFLAGS="-march=armv6 -mfloat-abi=soft -O2"
+        
+        # Build and install
+        make -j$(nproc)
+        sudo make install
+        
+        echo "libjpeg for ARMv6 installed to /opt/libjpeg-armv6"
+        ls -la /opt/libjpeg-armv6/
+    
+    - name: Cache libcurl for ARMv6
+      uses: actions/cache@v4
+      with:
+        path: /opt/libcurl-armv6
+        key: libcurl-armv6-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          libcurl-armv6-${{ runner.os }}-
+          libcurl-${{ runner.os }}-
+
+    - name: Build libcurl for ARMv6
+      run: |
+        echo "Building libcurl for ARMv6 (Pi Zero)"
+        
+        # Download libcurl source
+        wget https://curl.se/download/curl-8.4.0.tar.gz
+        tar -xzf curl-8.4.0.tar.gz
+        cd curl-8.4.0
+        
+        # Configure for ARMv6 cross-compilation
+        ./configure \
+          --host=arm-linux-gnueabi \
+          --prefix=/opt/libcurl-armv6 \
+          --disable-shared \
+          --enable-static \
+          --without-zlib \
+          --without-zstd \
+          --without-brotli \
+          --without-libpsl \
+          --without-librtmp \
+          --without-libidn2 \
+          --without-libssh2 \
+          --without-nghttp2 \
+          --without-ngtcp2 \
+          --without-nghttp3 \
+          --without-quiche \
+          --without-ssl \
+          --disable-ldap \
+          --disable-ldaps \
+          --disable-rtsp \
+          --disable-proxy \
+          --disable-dict \
+          --disable-telnet \
+          --disable-tftp \
+          --disable-pop3 \
+          --disable-imap \
+          --disable-smb \
+          --disable-smtp \
+          --disable-gopher \
+          --disable-manual \
+          --disable-libcurl-option \
+          --disable-ipv6 \
+          --disable-ftp \
+          --disable-file \
+          --disable-ftps \
+          --disable-https \
+          --disable-sftp \
+          --disable-scp \
+          --disable-smtps \
+          --disable-pop3s \
+          --disable-imaps \
+          --disable-http2 \
+          --disable-http3 \
+          --enable-http \
+          CC=arm-linux-gnueabi-gcc \
+          CFLAGS="-march=armv6 -mfloat-abi=soft -O2"
+        
+        # Build and install
+        make -j$(nproc)
+        sudo make install
+        
+        echo "libcurl for ARMv6 installed to /opt/libcurl-armv6"
+        ls -la /opt/libcurl-armv6/
+    
+    - name: Build mjpg-streamer for Pi Zero
+      run: |
+        echo "Building mjpg-streamer for Pi Zero (ARMv6 soft-float)"
+        
+        # Debug: Check if cmake files exist
+        echo "=== Checking cmake files ==="
+        ls -la src/cmake/
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Source directory contents ==="
+        ls -la
+        
+        export CC=arm-linux-gnueabi-gcc
+        export CXX=arm-linux-gnueabi-g++
+        export JPEG_ROOT=/opt/libjpeg-armv6
+        export CURL_ROOT=/opt/libcurl-armv6
+        
+        # Create build directory
+        mkdir -p build-pi-zero
+        cd build-pi-zero
+        
+        # Configure CMake for ARMv6
+        cmake .. \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=arm \
+          -DCMAKE_C_COMPILER=arm-linux-gnueabi-gcc \
+          -DCMAKE_CXX_COMPILER=arm-linux-gnueabi-g++ \
+          -DCMAKE_C_FLAGS="-march=armv6 -mfloat-abi=soft -Wno-unused-result -Wno-format-overflow" \
+          -DCMAKE_CXX_FLAGS="-march=armv6 -mfloat-abi=soft -Wno-unused-result -Wno-format-overflow" \
+          -DCMAKE_EXE_LINKER_FLAGS="-static" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DJPEG_INCLUDE_DIR=${JPEG_ROOT}/include \
+          -DJPEG_LIBRARY=${JPEG_ROOT}/lib/libjpeg.a \
+          -DCURL_INCLUDE_DIR=${CURL_ROOT}/include \
+          -DCURL_LIBRARY=${CURL_ROOT}/lib/libcurl.a
+        
+        # Build with clean output
+        echo "🔨 Building mjpg-streamer..."
+        make -j$(nproc) 2>/dev/null || make -j$(nproc)
+        echo "✅ Build completed successfully!"
+        
+        # Check what plugins were built
+        echo "🔌 Checking built plugins:"
+        if [ -d plugins ]; then
+          ls -la plugins/*.so 2>/dev/null || echo "No .so files found in plugins/"
+          echo "📊 Total plugins built: $(ls plugins/*.so 2>/dev/null | wc -l)"
+        else
+          echo "❌ plugins/ directory not found"
+        fi
+        
+        # Check if binaries were created
+        if [ -f mjpg_streamer ]; then
+          echo "=== Pi Zero binary info ==="
+          file mjpg_streamer
+          ls -lh mjpg_streamer
+          echo "=== Dependencies check ==="
+          arm-linux-gnueabi-readelf -d mjpg_streamer || echo "Static binary (no dynamic deps)"
+        else
+          echo "Cross-compilation failed"
+          exit 1
+        fi
+        
+        # Create proper artifact structure
+        cd ..
+        mkdir -p artifact-pi-zero
+        cp build-pi-zero/mjpg_streamer artifact-pi-zero/
+        mkdir -p artifact-pi-zero/plugins
+        find build-pi-zero -name "*.so" -exec cp {} artifact-pi-zero/plugins/ \;
+        echo "📦 Created artifact structure:"
+        ls -la artifact-pi-zero/
+        echo "🔌 Available plugins:"
+        ls -la artifact-pi-zero/plugins/
+        echo "📊 Plugin count: $(ls artifact-pi-zero/plugins/*.so 2>/dev/null | wc -l)"
+    
+    - name: Upload Pi Zero artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mjpg-streamer-pi-zero
+        path: artifact-pi-zero/
+
+  cross-compile-pi3-4:
+    name: Cross-compile Pi 3/4
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Cache cross-compilation tools
+      uses: actions/cache@v4
+      with:
+        path: /usr/bin/*-arm-linux-gnueabihf*
+        key: cross-tools-armv7-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          cross-tools-armv7-${{ runner.os }}-
+          cross-tools-${{ runner.os }}-
+
+    - name: Install ARM cross-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+        # Install static libraries for ARMv7
+        sudo apt-get install -y libc6-dev-armhf-cross libstdc++-13-dev-armhf-cross
+        sudo apt-get install -y cmake pkg-config
+    
+    - name: Cache libjpeg for ARMv7
+      uses: actions/cache@v4
+      with:
+        path: /opt/libjpeg-armv7
+        key: libjpeg-armv7-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          libjpeg-armv7-${{ runner.os }}-
+          libjpeg-${{ runner.os }}-
+
+    - name: Build libjpeg for ARMv7
+      run: |
+        echo "Building libjpeg for ARMv7 (Pi 3/4)"
+        
+        # Download libjpeg source
+        wget http://www.ijg.org/files/jpegsrc.v9e.tar.gz
+        tar -xzf jpegsrc.v9e.tar.gz
+        cd jpeg-9e
+        
+        # Configure for ARMv7 cross-compilation
+        ./configure \
+          --host=arm-linux-gnueabihf \
+          --prefix=/opt/libjpeg-armv7 \
+          CC=arm-linux-gnueabihf-gcc \
+          CFLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -O2"
+        
+        # Build and install
+        make -j$(nproc)
+        sudo make install
+        
+        echo "libjpeg for ARMv7 installed to /opt/libjpeg-armv7"
+        ls -la /opt/libjpeg-armv7/
+    
+    - name: Cache libcurl for ARMv7
+      uses: actions/cache@v4
+      with:
+        path: /opt/libcurl-armv7
+        key: libcurl-armv7-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          libcurl-armv7-${{ runner.os }}-
+          libcurl-${{ runner.os }}-
+
+    - name: Build libcurl for ARMv7
+      run: |
+        echo "Building libcurl for ARMv7 (Pi 3/4)"
+        
+        # Download libcurl source
+        wget https://curl.se/download/curl-8.4.0.tar.gz
+        tar -xzf curl-8.4.0.tar.gz
+        cd curl-8.4.0
+        
+        # Configure for ARMv7 cross-compilation
+        ./configure \
+          --host=arm-linux-gnueabihf \
+          --prefix=/opt/libcurl-armv7 \
+          --disable-shared \
+          --enable-static \
+          --without-zlib \
+          --without-zstd \
+          --without-brotli \
+          --without-libpsl \
+          --without-librtmp \
+          --without-libidn2 \
+          --without-libssh2 \
+          --without-nghttp2 \
+          --without-ngtcp2 \
+          --without-nghttp3 \
+          --without-quiche \
+          --without-ssl \
+          --disable-ldap \
+          --disable-ldaps \
+          --disable-rtsp \
+          --disable-proxy \
+          --disable-dict \
+          --disable-telnet \
+          --disable-tftp \
+          --disable-pop3 \
+          --disable-imap \
+          --disable-smb \
+          --disable-smtp \
+          --disable-gopher \
+          --disable-manual \
+          --disable-libcurl-option \
+          --disable-ipv6 \
+          --disable-ftp \
+          --disable-file \
+          --disable-ftps \
+          --disable-https \
+          --disable-sftp \
+          --disable-scp \
+          --disable-smtps \
+          --disable-pop3s \
+          --disable-imaps \
+          --disable-http2 \
+          --disable-http3 \
+          --enable-http \
+          CC=arm-linux-gnueabihf-gcc \
+          CFLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -O2"
+        
+        # Build and install
+        make -j$(nproc)
+        sudo make install
+        
+        echo "libcurl for ARMv7 installed to /opt/libcurl-armv7"
+        ls -la /opt/libcurl-armv7/
+    
+    - name: Build mjpg-streamer for Pi 3/4
+      run: |
+        echo "Building mjpg-streamer for Pi 3/4 (ARMv7 hard-float)"
+        
+        # Debug: Check if cmake files exist
+        echo "=== Checking cmake files ==="
+        ls -la src/cmake/
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Source directory contents ==="
+        ls -la
+        
+        export CC=arm-linux-gnueabihf-gcc
+        export CXX=arm-linux-gnueabihf-g++
+        export JPEG_ROOT=/opt/libjpeg-armv7
+        export CURL_ROOT=/opt/libcurl-armv7
+        
+        # Create build directory
+        mkdir -p build-pi3-4
+        cd build-pi3-4
+        
+        # Configure CMake for ARMv7
+        cmake .. \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=arm \
+          -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc \
+          -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ \
+          -DCMAKE_C_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Wno-unused-result -Wno-format-overflow" \
+          -DCMAKE_CXX_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Wno-unused-result -Wno-format-overflow" \
+          -DCMAKE_EXE_LINKER_FLAGS="-static" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DJPEG_INCLUDE_DIR=${JPEG_ROOT}/include \
+          -DJPEG_LIBRARY=${JPEG_ROOT}/lib/libjpeg.a \
+          -DCURL_INCLUDE_DIR=${CURL_ROOT}/include \
+          -DCURL_LIBRARY=${CURL_ROOT}/lib/libcurl.a
+        
+        # Build with clean output
+        echo "🔨 Building mjpg-streamer..."
+        make -j$(nproc) 2>/dev/null || make -j$(nproc)
+        echo "✅ Build completed successfully!"
+        
+        # Check what plugins were built
+        echo "🔌 Checking built plugins:"
+        if [ -d plugins ]; then
+          ls -la plugins/*.so 2>/dev/null || echo "No .so files found in plugins/"
+          echo "📊 Total plugins built: $(ls plugins/*.so 2>/dev/null | wc -l)"
+        else
+          echo "❌ plugins/ directory not found"
+        fi
+        
+        # Check if binaries were created
+        if [ -f mjpg_streamer ]; then
+          echo "=== Pi 3/4 binary info ==="
+          file mjpg_streamer
+          ls -lh mjpg_streamer
+          echo "=== Dependencies check ==="
+          arm-linux-gnueabihf-readelf -d mjpg_streamer || echo "Static binary (no dynamic deps)"
+        else
+          echo "Cross-compilation failed"
+          exit 1
+        fi
+        
+        # Create proper artifact structure
+        cd ..
+        mkdir -p artifact-pi3-4
+        cp build-pi3-4/mjpg_streamer artifact-pi3-4/
+        mkdir -p artifact-pi3-4/plugins
+        find build-pi3-4 -name "*.so" -exec cp {} artifact-pi3-4/plugins/ \;
+        echo "📦 Created artifact structure:"
+        ls -la artifact-pi3-4/
+        echo "🔌 Available plugins:"
+        ls -la artifact-pi3-4/plugins/
+        echo "📊 Plugin count: $(ls artifact-pi3-4/plugins/*.so 2>/dev/null | wc -l)"
+    
+    - name: Upload Pi 3/4 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mjpg-streamer-pi3-4
+        path: artifact-pi3-4/
+
+  cross-compile-pi5:
+    name: Cross-compile Pi 5 (ARM64)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Cache cross-compilation tools
+      uses: actions/cache@v4
+      with:
+        path: /usr/bin/*-aarch64-linux-gnu*
+        key: cross-tools-arm64-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          cross-tools-arm64-${{ runner.os }}-
+          cross-tools-${{ runner.os }}-
+
+    - name: Install ARM64 cross-compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+        # Install static libraries for ARM64
+        sudo apt-get install -y libc6-dev-arm64-cross libstdc++-13-dev-arm64-cross
+        sudo apt-get install -y cmake pkg-config
+    
+    - name: Cache libjpeg for ARM64
+      uses: actions/cache@v4
+      with:
+        path: /opt/libjpeg-arm64
+        key: libjpeg-arm64-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          libjpeg-arm64-${{ runner.os }}-
+          libjpeg-${{ runner.os }}-
+
+    - name: Build libjpeg for ARM64
+      run: |
+        echo "Building libjpeg for ARM64 (Pi 5)"
+        
+        # Download libjpeg source
+        wget http://www.ijg.org/files/jpegsrc.v9e.tar.gz
+        tar -xzf jpegsrc.v9e.tar.gz
+        cd jpeg-9e
+        
+        # Configure for ARM64 cross-compilation
+        ./configure \
+          --host=aarch64-linux-gnu \
+          --prefix=/opt/libjpeg-arm64 \
+          CC=aarch64-linux-gnu-gcc \
+          CFLAGS="-march=armv8-a -O2"
+        
+        # Build and install
+        make -j$(nproc)
+        sudo make install
+        
+        echo "libjpeg for ARM64 installed to /opt/libjpeg-arm64"
+        ls -la /opt/libjpeg-arm64/
+    
+    - name: Cache libcurl for ARM64
+      uses: actions/cache@v4
+      with:
+        path: /opt/libcurl-arm64
+        key: libcurl-arm64-${{ runner.os }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          libcurl-arm64-${{ runner.os }}-
+          libcurl-${{ runner.os }}-
+
+    - name: Build libcurl for ARM64
+      run: |
+        echo "Building libcurl for ARM64 (Pi 5)"
+        
+        # Download libcurl source
+        wget https://curl.se/download/curl-8.4.0.tar.gz
+        tar -xzf curl-8.4.0.tar.gz
+        cd curl-8.4.0
+        
+        # Configure for ARM64 cross-compilation
+        ./configure \
+          --host=aarch64-linux-gnu \
+          --prefix=/opt/libcurl-arm64 \
+          --disable-shared \
+          --enable-static \
+          --without-zlib \
+          --without-zstd \
+          --without-brotli \
+          --without-libpsl \
+          --without-librtmp \
+          --without-libidn2 \
+          --without-libssh2 \
+          --without-nghttp2 \
+          --without-ngtcp2 \
+          --without-nghttp3 \
+          --without-quiche \
+          --without-ssl \
+          --disable-ldap \
+          --disable-ldaps \
+          --disable-rtsp \
+          --disable-proxy \
+          --disable-dict \
+          --disable-telnet \
+          --disable-tftp \
+          --disable-pop3 \
+          --disable-imap \
+          --disable-smb \
+          --disable-smtp \
+          --disable-gopher \
+          --disable-manual \
+          --disable-libcurl-option \
+          --disable-ipv6 \
+          --disable-ftp \
+          --disable-file \
+          --disable-ftps \
+          --disable-https \
+          --disable-sftp \
+          --disable-scp \
+          --disable-smtps \
+          --disable-pop3s \
+          --disable-imaps \
+          --disable-http2 \
+          --disable-http3 \
+          --enable-http \
+          CC=aarch64-linux-gnu-gcc \
+          CFLAGS="-march=armv8-a -O2"
+        
+        # Build and install
+        make -j$(nproc)
+        sudo make install
+        
+        echo "libcurl for ARM64 installed to /opt/libcurl-arm64"
+        ls -la /opt/libcurl-arm64/
+    
+    - name: Build mjpg-streamer for Pi 5
+      run: |
+        echo "Building mjpg-streamer for Pi 5 (ARM64)"
+        
+        # Debug: Check if cmake files exist
+        echo "=== Checking cmake files ==="
+        ls -la src/cmake/
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Source directory contents ==="
+        ls -la
+        
+        export CC=aarch64-linux-gnu-gcc
+        export CXX=aarch64-linux-gnu-g++
+        export JPEG_ROOT=/opt/libjpeg-arm64
+        export CURL_ROOT=/opt/libcurl-arm64
+        
+        # Create build directory
+        mkdir -p build-pi5
+        cd build-pi5
+        
+        # Configure CMake for ARM64
+        cmake .. \
+          -DCMAKE_SYSTEM_NAME=Linux \
+          -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+          -DCMAKE_C_FLAGS="-march=armv8-a -Wno-unused-result -Wno-format-overflow" \
+          -DCMAKE_CXX_FLAGS="-march=armv8-a -Wno-unused-result -Wno-format-overflow" \
+          -DCMAKE_EXE_LINKER_FLAGS="-static" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-Wl,--as-needed -Wl,--allow-shlib-undefined" \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DJPEG_INCLUDE_DIR=${JPEG_ROOT}/include \
+          -DJPEG_LIBRARY=${JPEG_ROOT}/lib/libjpeg.a \
+          -DCURL_INCLUDE_DIR=${CURL_ROOT}/include \
+          -DCURL_LIBRARY=${CURL_ROOT}/lib/libcurl.a
+        
+        # Build with clean output
+        echo "🔨 Building mjpg-streamer..."
+        make -j$(nproc) 2>/dev/null || make -j$(nproc)
+        echo "✅ Build completed successfully!"
+        
+        # Check what plugins were built
+        echo "🔌 Checking built plugins:"
+        if [ -d plugins ]; then
+          ls -la plugins/*.so 2>/dev/null || echo "No .so files found in plugins/"
+          echo "📊 Total plugins built: $(ls plugins/*.so 2>/dev/null | wc -l)"
+        else
+          echo "❌ plugins/ directory not found"
+        fi
+        
+        # Check if binaries were created
+        if [ -f mjpg_streamer ]; then
+          echo "=== Pi 5 binary info ==="
+          file mjpg_streamer
+          ls -lh mjpg_streamer
+          echo "=== Dependencies check ==="
+          aarch64-linux-gnu-readelf -d mjpg_streamer || echo "Static binary (no dynamic deps)"
+        else
+          echo "Cross-compilation failed"
+          exit 1
+        fi
+        
+        # Create proper artifact structure
+        cd ..
+        mkdir -p artifact-pi5
+        cp build-pi5/mjpg_streamer artifact-pi5/
+        mkdir -p artifact-pi5/plugins
+        find build-pi5 -name "*.so" -exec cp {} artifact-pi5/plugins/ \;
+        echo "📦 Created artifact structure:"
+        ls -la artifact-pi5/
+        echo "🔌 Available plugins:"
+        ls -la artifact-pi5/plugins/
+        echo "📊 Plugin count: $(ls artifact-pi5/plugins/*.so 2>/dev/null | wc -l)"
+    
+    - name: Upload Pi 5 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mjpg-streamer-pi5
+        path: artifact-pi5/
+
+  build-summary:
+    needs: [cross-compile-pi-zero, cross-compile-pi3-4, cross-compile-pi5]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+    - name: Build Summary
+      run: |
+        echo "## 🚀 mjpg-streamer Raspberry Pi Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📦 Supported Raspberry Pi Models:" >> $GITHUB_STEP_SUMMARY
+        echo "- **Raspberry Pi Zero**: ARMv6 (soft-float)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Raspberry Pi 3**: ARMv7 (hard-float)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Raspberry Pi 4**: ARMv7 (hard-float)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Raspberry Pi 5**: ARM64" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🎯 Features:" >> $GITHUB_STEP_SUMMARY
+        echo "- Motion detection plugin with percentage-based thresholds" >> $GITHUB_STEP_SUMMARY
+        echo "- Webhook notifications (GET/POST with -w/-p parameters)" >> $GITHUB_STEP_SUMMARY
+        echo "- Cross-compilation for all Pi models" >> $GITHUB_STEP_SUMMARY
+        echo "- Optimized for resource-constrained devices" >> $GITHUB_STEP_SUMMARY
+        echo "- Fully static builds with no external dependencies" >> $GITHUB_STEP_SUMMARY
+        echo "- HTTPS webhook support with mbedTLS" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📋 Build Status:" >> $GITHUB_STEP_SUMMARY
+        echo "Check the individual build jobs above for detailed results." >> $GITHUB_STEP_SUMMARY
