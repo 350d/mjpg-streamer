@@ -92,6 +92,7 @@ struct v4l2_jpegcompression {
 #define V4L2_CTRL_TYPE_INTEGER_MENU    9
 
 #endif
+#include <limits.h>
 #include <pthread.h>
 #include <sys/time.h>
 
@@ -158,6 +159,9 @@ struct _globals {
 
     /* program name for plugin path resolution */
     char* argv0;
+
+    /* Absolute working directory at startup (before daemon chdir("/")) */
+    char cwd[PATH_MAX];
 
     /* pointer to control functions */
     //int (*control)(int command, char *details);

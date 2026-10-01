@@ -40,44 +40,84 @@ static globals global;
 /* Relay system functions removed - no longer used */
 
 /******************************************************************************
-Description.: Find plugin file in plugins directory relative to executable
-Input Value.: plugin_name - name of the plugin file
-Return Value: full path to plugin or NULL if not found
+Description.: Resolve plugin path to an absolute path that survives daemon
+              chdir("/"). Handles absolute paths, relative paths like
+              ./plugins/foo.so, and bare names next to the executable.
+Input Value.: plugin_name - name or path of the plugin file
+Return Value: malloc'd absolute path (caller must free), or NULL if not found
 ******************************************************************************/
 static char* find_plugin_path(const char* plugin_name) {
-    static char executable_path[PATH_MAX];
     static char plugins_dir[PATH_MAX];
-    static char plugin_path[PATH_MAX];
     static int initialized = 0;
-    
+    char candidate[PATH_MAX];
+    char resolved[PATH_MAX];
+
+    if (plugin_name == NULL || plugin_name[0] == '\0') {
+        return NULL;
+    }
+
+    /* Absolute path */
+    if (plugin_name[0] == '/') {
+        if (access(plugin_name, R_OK) == 0) {
+            return strdup(plugin_name);
+        }
+        return NULL;
+    }
+
+    /* Relative path with directory (e.g. ./plugins/input_uvc.so) */
+    if (strchr(plugin_name, '/') != NULL) {
+        if (global.cwd[0] != '\0') {
+            snprintf(candidate, sizeof(candidate), "%s/%s", global.cwd, plugin_name);
+            if (access(candidate, R_OK) == 0) {
+                if (realpath(candidate, resolved) != NULL) {
+                    return strdup(resolved);
+                }
+                return strdup(candidate);
+            }
+        }
+        if (access(plugin_name, R_OK) == 0) {
+            if (realpath(plugin_name, resolved) != NULL) {
+                return strdup(resolved);
+            }
+            return strdup(plugin_name);
+        }
+        return NULL;
+    }
+
+    /* Bare filename: look in <exe_dir>/plugins/ */
     if (!initialized) {
-        // Get path to executable
-        ssize_t len = readlink("/proc/self/exe", executable_path, sizeof(executable_path) - 1);
-        if (len == -1) {
-            // Fallback: use argv[0] if available
-            if (global.argv0) {
+        char executable_path[PATH_MAX];
+        ssize_t len = -1;
+
+#ifdef __linux__
+        len = readlink("/proc/self/exe", executable_path, sizeof(executable_path) - 1);
+#endif
+        if (len != -1) {
+            executable_path[len] = '\0';
+        } else if (global.argv0 != NULL) {
+            if (global.argv0[0] == '/') {
                 strncpy(executable_path, global.argv0, sizeof(executable_path) - 1);
                 executable_path[sizeof(executable_path) - 1] = '\0';
+            } else if (global.cwd[0] != '\0') {
+                snprintf(executable_path, sizeof(executable_path), "%s/%s", global.cwd, global.argv0);
             } else {
-                return NULL;
+                strncpy(executable_path, global.argv0, sizeof(executable_path) - 1);
+                executable_path[sizeof(executable_path) - 1] = '\0';
             }
         } else {
-            executable_path[len] = '\0';
+            return NULL;
         }
-        
-        // Get directory of executable
-        char* exec_dir = dirname(executable_path);
+
+        char *exec_dir = dirname(executable_path);
         snprintf(plugins_dir, sizeof(plugins_dir), "%s/plugins", exec_dir);
         initialized = 1;
     }
-    
-    // Check if plugin exists in plugins directory
-    snprintf(plugin_path, sizeof(plugin_path), "%s/%s", plugins_dir, plugin_name);
-    if (access(plugin_path, R_OK) == 0) {
-        return plugin_path;
+
+    snprintf(candidate, sizeof(candidate), "%s/%s", plugins_dir, plugin_name);
+    if (access(candidate, R_OK) == 0) {
+        return strdup(candidate);
     }
-    
-    // If not found, return original name (let dlopen handle it)
+
     return NULL;
 }
 
@@ -240,6 +280,10 @@ int main(int argc, char *argv[])
     global.outcnt = 0;
     global.incnt = 0;
     global.argv0 = argv[0];
+    global.cwd[0] = '\0';
+    if (getcwd(global.cwd, sizeof(global.cwd)) == NULL) {
+        global.cwd[0] = '\0';
+    }
     
     /* parameter parsing */
     while(1) {
@@ -406,12 +450,13 @@ int main(int argc, char *argv[])
         }
         
         
-        // Try to find plugin in plugins directory
+        // Resolve plugin path (absolute) so -b / chdir("/") does not break relative paths
         char* plugin_path = find_plugin_path(global.in[i].plugin);
         
         
         if (plugin_path) {
             global.in[i].handle = dlopen(plugin_path, RTLD_LAZY);
+            free(plugin_path);
         } else {
             global.in[i].handle = dlopen(global.in[i].plugin, RTLD_LAZY);
         }
@@ -462,10 +507,11 @@ int main(int argc, char *argv[])
         tmp = (size_t)(strchr(output[i], ' ') - output[i]);
         global.out[i].plugin = (tmp > 0) ? strndup(output[i], tmp) : strdup(output[i]);
         
-        // Try to find plugin in plugins directory
+        // Resolve plugin path (absolute) so -b / chdir("/") does not break relative paths
         char* plugin_path = find_plugin_path(global.out[i].plugin);
         if (plugin_path) {
             global.out[i].handle = dlopen(plugin_path, RTLD_LAZY);
+            free(plugin_path);
         } else {
             global.out[i].handle = dlopen(global.out[i].plugin, RTLD_LAZY);
         }

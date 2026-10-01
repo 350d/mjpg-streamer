@@ -177,10 +177,22 @@ int output_init(output_parameter *param, int id)
         case 8:
         case 9:
             DBG("case 8,9\n");
-            www_folder = malloc(strlen(optarg) + 2);
-            strcpy(www_folder, optarg);
-            if(optarg[strlen(optarg)-1] != '/')
+            /* Resolve relative www path against startup cwd so -b/chdir("/") works */
+            if (optarg[0] != '/' && param->global->cwd[0] != '\0') {
+                size_t need = strlen(param->global->cwd) + 1 + strlen(optarg) + 2;
+                www_folder = malloc(need);
+                if (www_folder != NULL) {
+                    snprintf(www_folder, need, "%s/%s", param->global->cwd, optarg);
+                }
+            } else {
+                www_folder = malloc(strlen(optarg) + 2);
+                if (www_folder != NULL) {
+                    strcpy(www_folder, optarg);
+                }
+            }
+            if (www_folder != NULL && www_folder[strlen(www_folder) - 1] != '/') {
                 strcat(www_folder, "/");
+            }
             break;
 
             /* i, input */
